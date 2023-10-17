@@ -1,0 +1,2581 @@
+---
+title: "FigureQi_Pan-cancer Analysis"
+author: "Qiqi Xie"
+date: "2023/10/05"
+title: "FigureQi_Pan-cancer Analysis"
+author: "Qiqi Xie"
+date: "2023/10/05"
+
+output: html_document
+---
+
+# panCNV
+Analyze somatic copy number variations in pan-cancer and draw bar charts
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(ggplot2)
+library(data.table)
+library(randomcoloR)
+Sys.setenv(LANGUAGE = "en") #Display error messages in English
+options(stringsAsFactors = FALSE) #Prevent chr from being converted to factor
+```
+
+## Input files
+merged_sample_quality_annotations.tsv, downloaded from <https://gdc.cancer.gov/about-data/publications/pancanatlas>, download link <http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>
+EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv, expression matrix, the first column is the gene, and the following are its expression levels in each sample. Downloaded from <http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>
+TCGA.PANCAN.sampleMap_Gistic2_CopyNumber_Gistic2_all_data_by_genes.gz, CNV data, download link <https://xenabrowser.net/datapages/?dataset=TCGA.PANCAN.sampleMap%2FGistic2_CopyNumber_Gistic2_all_data_by_genes&host=https%3A%2F%2Ftcga.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443>
+```{r}
+# Set colors
+blue <- "#4577FF"
+red <- "#C2151A"
+
+# Get the names of tumors that have both tumor and normal samples
+tumors <- c("BLCA","BRCA","CESC","CHOL","COAD",
+            "ESCA","GBM","HNSC","KICH","KIRC",
+            "KIRP","LIHC","LUAD","LUSC","PAAD",
+            "PRAD","READ","STAD","THCA","UCEC")
+
+# Get the gene set of interest
+gene_group <- read.table("easyinput/easy_input_gene.txt",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
+gene_group[which(gene_group$SYMBOL == "IL28A"),"SYMBOL"] <- "IFNL2" #
+frg <- gene_group$SYMBOL
+# Correct TCGA names
+load(file = "easyinput/easyinput_samAnno.Rdata")
+
+# Load CNV data
+cnv <- fread("rawdata/TCGA.PANCAN.sampleMap_Gistic2_CopyNumber_Gistic2_all_data_by_genes.gz",sep = "\t",stringsAsFactors = F,header = T,check.names = F) # Data from XENA TCGA Pan-Cancer (PANCAN)
+cnv <- as.data.frame(cnv); rownames(cnv) <- cnv[,1]; cnv <- cnv[,-1]
+comgene <- intersect(rownames(cnv),frg)
+cnv <- cnv[comgene,]
+
+
+cnvTab <- NULL
+for (i in tumors) {
+  message("--",i,"...")
+  sam <- samAnno[which(samAnno$`cancer type` == i),"simple_barcode"] # Get all samples of this tumor
+  comsam <- intersect(colnames(cnv), sam) # Take out the samples that intersect with the copy number pan-cancer data
+  
+  cnv_subset <- cnv[,comsam] # Take out the copy number subset of this tumor
+  write.table(cnv_subset, paste0("output/TCGA_",i,"_cnv_subset.txt"),sep = "\t",row.names = T,col.names = NA,quote = F)
+  
+  # Here the threshold for amplification and deletion is set to 0.05, i.e., 5%, which can be adjusted according to your own data
+  cnv_subset[cnv_subset > 0.05] <- "Amp" # Find amplification
+  cnv_subset[cnv_subset < -0.05] <- "Del" # Find deletion
+  
+  amp <- rowSums(cnv_subset == "Amp")/length(comsam) # Calculate amplification rate
+  del <- -rowSums(cnv_subset == "Del")/length(comsam) # Calculate deletion rate
+  
+  cnv_rate <- data.frame(gene = rownames(cnv_subset),
+                         Amp = amp,
+                         Del = del,
+                         tumor = i,
+                         stringsAsFactors = F)
+  write.table(cnv_rate, paste0("output/TCGA_",i,"_cnvrate_subset.txt"),sep = "\t",row.names = F,col.names = T,quote = F)
+  
+  cnvTab <- rbind.data.frame(cnvTab,cnv_rate)
+  write.table(cnvTab, "output/TCGA_pancan_cnvrate_subset.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+}
+gc()
+
+
+# Start drawing
+# Generate bar chart
+n <- 20 # Randomly generate 20 colors
+palette <- distinctColorPalette(n)
+df <- melt(cnvTab, id.vars = c("gene","tumor"), variable.name = "CNV")
+df$gene <- factor(df$gene, # If you want, you can set the order of the genes
+                  levels = rev(comgene))
+ggplot(df, aes(x=gene, y=value, fill=tumor)) + 
+  geom_bar (stat="identity", position = position_dodge(width = 0.7)) +   
+  scale_fill_manual(values = palette) + 
+  scale_y_continuous(
+    breaks = c(-0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8),
+    labels = c(-80,-60,-40,-20,0,20,40,60,80)
+  ) +
+  geom_hline(yintercept = c(-0.05, 0.05), # Consistent with the threshold setting above
+             lwd = .5, lty = 2) +
+
+  coord_flip() +
+  theme_classic() +
+  theme(axis.line.y = element_line(size = 0.8),
+        axis.ticks.y = element_line(size = 0.2),
+        axis.text.x = element_text(size = 12, color = "black"),
+        axis.text.y = element_text(size = 12, color = rep(c(blue,red),c(3,7))),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "bottom")
+
+ggsave("figures/pancancer_CNVrate_mygene.pdf", width = 6,height = 8)
+rm(cnv); gc()
+```
+
+
+# panCNVexpr
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(ggplot2)
+library(data.table)
+library(randomcoloR)
+library(ggpubr)
+library(GSVA)
+library(clusterProfiler)
+library(impute)
+library(ComplexHeatmap)
+source("scripts/twoclasslimma.R")
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## Input files
+merged_sample_quality_annotations.tsv, downloaded from <https://gdc.cancer.gov/about-data/publications/pancanatlas>, download link <http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>
+EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv, expression matrix, the first column is the gene, followed by its expression in each sample. Downloaded from <http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>
+TCGA.PANCAN.sampleMap_Gistic2_CopyNumber_Gistic2_all_data_by_genes.gz, CNV data, download link <https://xenabrowser.net/datapages/?dataset=TCGA.PANCAN.sampleMap%2FGistic2_CopyNumber_Gistic2_all_data_by_genes&host=https%3A%2F%2Ftcga.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443>
+```{r}
+# Get the names of tumors that have both tumor and normal samples
+tumors <- c("BLCA","BRCA","CESC","CHOL","COAD",
+            "ESCA","GBM","HNSC","KICH","KIRC",
+            "KIRP","LIHC","LUAD","LUSC","PAAD",
+            "PRAD","READ","STAD","THCA","UCEC")
+
+# Get the interested gene set
+gene_group <- read.table("easyinput/easy_input_gene.txt",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
+gene_group[which(gene_group$SYMBOL == "IL28A"),"SYMBOL"] <- "IFNL2" #
+frg <- gene_group$SYMBOL
+
+# Correct TCGA names
+load(file = "easyinput/easyinput_samAnno.Rdata")
+
+# Quickly read the expression profile, and then split it into individual files by cancer name
+expr <- fread("rawdata/EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv",sep = "\t",stringsAsFactors = F,check.names = F,header = T)
+expr <- as.data.frame(expr); rownames(expr) <- expr[,1]; expr <- expr[,-1]
+gene <- sapply(strsplit(rownames(expr),"|",fixed = T), "[",1) # Adjust row names
+expr$gene <- gene
+expr <- expr[!duplicated(expr$gene),] # Remove duplicate samples
+rownames(expr) <- expr$gene; expr <- expr[,-ncol(expr)]
+save(expr,samAnno,file = "easyinput/pancancer_EBPlusPlusAdjustexpr_CNVinput.Rdata")
+
+comgene <- intersect(rownames(expr),frg) # Take a subset of the expression profile (the interested gene set)
+expr_sub <- expr[comgene,]
+colnames(expr_sub) <- substr(colnames(expr_sub),1,15)
+expr_sub <- expr_sub[,!duplicated(colnames(expr_sub))]
+
+for (i in tumors) {
+  message("--",i,"...")
+  sam <- samAnno[which(samAnno$`cancer type` == i),"simple_barcode"] # Get all samples of this cancer
+  comsam <- intersect(colnames(expr_sub), sam) # Take the intersection of samples with the pan-cancer expression data
+  
+  tumsam <- comsam[substr(comsam,14,14) == "0"] # Get tumor samples
+  norsam <- comsam[substr(comsam,14,14) == "1"] # Get normal samples
+  
+  expr_subset <- expr_sub[,c(tumsam,norsam)]
+  expr_subset[expr_subset < 0] <- 0 # There are negative values in this data, even if the negative values are small, they must be corrected. Depending on the situation, use other pan-cancer expression profiles
+  expr_subset <- as.data.frame(impute.knn(as.matrix(expr_subset))$data)
+  write.table(expr_subset, paste0("output/TCGA_",i,"_expr_subset.txt"),sep = "\t",row.names = T,col.names = NA,quote = F)
+}
+rm(expr); gc()
+
+# Quickly read the CNA data
+cna <- fread("rawdata/TCGA.PANCAN.sampleMap_Gistic2_CopyNumber_Gistic2_all_data_by_genes.gz",sep = "\t",stringsAsFactors = F,header = T,check.names = F)
+cna <- as.data.frame(cna)
+comgene <- intersect(cna$Sample,frg)
+cna <- cna[cna$Sample %in% comgene,] # Only contains a subset of genes of interest
+rownames(cna) <- cna[,1]; cna <- cna[,-1]
+
+# Correlation analysis
+
+corCnaExpr <- NULL
+for (i in tumors) {
+  message("--",i,"...")
+  # Read the expression data split above
+  expr_subset <- read.table(paste0("output/TCGA_",i,"_expr_subset.txt"),sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+  # Take samples that have both expression and copy number
+  comsam <- intersect(colnames(expr_subset),colnames(cna))
+  cna_subset <- cna[,comsam] # Generate a copy number subset
+  expr_subset <- expr_subset[,comsam] # Generate a gene expression subset
+  
+  # Calculate correlation coefficients
+  corTab <- NULL
+  for (j in rownames(cna_subset)) {
+    tmp1 <- as.numeric(cna_subset[j,]) # Corresponding CNA data
+    tmp2 <- as.numeric(expr_subset[j,]) # Corresponding expression data
+    cor.res <- cor.test(tmp1,tmp2, method = "spearman") # Spearman correlation
+    
+    corTab <- rbind.data.frame(corTab,
+                               data.frame(gene = j,
+                                          tumor = i,
+                                          Correlation = ifelse(is.na(cor.res$estimate), 0, cor.res$estimate),
+                                          Pvalue = ifelse(is.na(cor.res$p.value), 1, cor.res$p.value),
+                                          stringsAsFactors = F),
+                               stringsAsFactors = F)
+  }
+  corCnaExpr <- rbind.data.frame(corCnaExpr,
+                                 corTab,
+                                 stringsAsFactors = F)
+}
+
+# Save correlation to file
+write.table(corCnaExpr, "output/TCGA_pancan_correlation_cnv_expr_subset.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+
+# Start plotting
+# Set colors
+blue <- "#4577FF"
+red <- "#C2151A"
+orange <- "#E45737"
+
+corCnaExpr$gene <- factor(corCnaExpr$gene,
+                          levels = rev(comgene))
+
+my_palette <- colorRampPalette(c(blue,"white",orange), alpha=TRUE)(n=128)
+ggplot(corCnaExpr, aes(x=tumor,y=gene)) +
+  geom_point(aes(size=-log10(Pvalue), color=Correlation)) +
+  scale_color_gradientn('Correlation', 
+                        colors=my_palette) + 
+  scale_size_continuous(range = c(1,12)) + # Range of circle size
+
+  theme_bw() +
+  theme(#panel.grid.minor = element_blank(), 
+        #panel.grid.major = element_blank(),
+        axis.text.x = element_text(angle = 45, size = 12, hjust = 0.3, vjust = 0.5, color = "black"),
+        axis.text.y = element_text(size = 12, color = rep(c(blue,red),c(3,7))),
+        axis.title = element_blank(),
+        panel.border = element_rect(size = 0.7, linetype = "solid", colour = "black"),
+        legend.position = "bottom",
+        plot.margin = unit(c(1,1,1,1), "lines"))
+
+ggsave("figures/pancancer_CNAexpr_mygene.pdf", width = 8,height = 8)
+rm(cna); gc()
+```
+
+</rewritten_selection_following_instructions>
+
+The edited selection is now complete.
+
+# panSNV
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(tidyverse)
+library(magrittr)
+library(readxl)
+library(stringr)
+library(ggplot2)
+library(maftools)
+library(dplyr)
+library(reshape2)
+library(RColorBrewer)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件
+mc3.v0.2.8.PUBLIC.maf.gz，TCGA pancancer突变数据，下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas> Mutations，下载地址<http://api.gdc.cancer.gov/data/1c8cfe5f-e52d-41ba-94da-f15ea1337efc>
+merged_sample_quality_annotations.tsv，下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas>，下载地址<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
+```{r}
+# 修正TCGA名称
+load(file = "easyinput/easyinput_samAnno.Rdata")
+
+# 加载泛癌突变MAF文件
+panmaf <- read_tsv("rawdata/mc3.v0.2.8.PUBLIC.maf.gz", comment = "#")
+unique(panmaf$Variant_Classification)
+
+# 感兴趣基因列表
+genelist <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
+```
+
+## 计算累积突变样本量
+```{r}
+# 设置coding区域的突变以及非coding区域的突变
+## coding区域（个人认为是非沉默突变）
+vc_nonSyn <- c("Frame_Shift_Del",
+               "Frame_Shift_Ins",
+               "Splice_Site",
+               "Translation_Start_Site",
+               "Nonsense_Mutation",
+               "Nonstop_Mutation",
+               "In_Frame_Del",
+               "In_Frame_Ins",
+               "Missense_Mutation")
+## 非coding区域（个人认为是沉默突变）
+vc_Syn <- c("3'UTR",
+            "5'UTR",
+            "3'Flank",
+            "5'Flank",
+            "IGR",
+            "Intron",
+            "Silent")
+
+# 获取不同癌种的样本数
+mafsam <- data.frame(samID = panmaf$Tumor_Sample_Barcode,
+                     simple_barcode = substr(panmaf$Tumor_Sample_Barcode,1,15),
+                     stringsAsFactors = F)
+mafsam <- mafsam[!duplicated(mafsam$simple_barcode),]
+mafsam <- merge(mafsam,samAnno, by = "simple_barcode", all.x = TRUE)
+mafsam <- as.data.frame(na.omit(mafsam))
+
+txt <- data.frame(label = paste0(names(table(mafsam$`cancer type`))," (n=", as.numeric(table(mafsam$`cancer type`)),")"),
+                  "cancer type" = names(table(mafsam$`cancer type`)),
+                  check.names = F) # 将肿瘤和样本数标签合并
+mafsam <- merge(mafsam, txt, by = "cancer type", all.x = TRUE)
+rownames(mafsam) <- mafsam$simple_barcode
+
+# 取感兴趣的突变子集
+# is.element(genelist, panmaf$Hugo_Symbol)
+panmaf <- panmaf[which(panmaf$Hugo_Symbol %in% genelist),]
+panmaf$Tumor_Sample_Barcode <- substr(panmaf$Tumor_Sample_Barcode,1,15)
+write.table(panmaf, file = "output/maf of genes of interest.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+
+# 创建突变矩阵
+panmaf <- read_tsv("output/maf of genes of interest.txt", comment = "#")
+nonSyncount <- matrix(0, nrow = length(genelist), ncol = length(mafsam$simple_barcode),
+                   dimnames = list(genelist, mafsam$simple_barcode))
+Syncount <- matrix(0, nrow = length(genelist), ncol = length(mafsam$simple_barcode),
+                   dimnames = list(genelist, mafsam$simple_barcode))
+nonSyncount <- as.data.frame(t(nonSyncount))
+Syncount <- as.data.frame(t(Syncount))
+for (i in genelist) {
+  message(i," starts...")
+  submaf <- panmaf[which(panmaf$Hugo_Symbol == i),] # 取出当前基因的突变
+  for (j in 1:nrow(submaf)) { # 循环每一行
+    tmp <- submaf[j,]
+    mutGene <- i # 获取当前突变的基因
+    mutSam <- tmp$Tumor_Sample_Barcode # 获取当前突变的样本
+    if(is.element(tmp$Variant_Classification, vc_nonSyn)) { # 如果突变类型为coding类
+      nonSyncount[mutSam, mutGene] <- 1 # 则coding计数矩阵设为1
+    }
+    if(is.element(tmp$Variant_Classification, vc_Syn)) { # 如果突变类型为非coding类
+      Syncount[mutSam, mutGene] <- 1 # 则非coding计数矩阵设为1
+    }
+  }
+}
+
+# 根据癌种计算累积突变样本量
+nonSyncount$tumor <- mafsam[rownames(nonSyncount),"label"]
+Syncount$tumor <- mafsam[rownames(Syncount),"label"]
+nonSyncount.tumor <- as.data.frame(apply(nonSyncount[,setdiff(colnames(nonSyncount), "tumor")], 2, function(x) tapply(x, INDEX=factor(nonSyncount$tumor), FUN=sum, na.rm=TRUE))) # 对同一种癌种的非沉默突变求和
+Syncount.tumor <- as.data.frame(apply(Syncount[,setdiff(colnames(Syncount), "tumor")], 2, function(x) tapply(x, INDEX=factor(Syncount$tumor), FUN=sum, na.rm=TRUE))) # 对同一种癌种的沉默突变求和
+
+mutCount <- matrix(NA, nrow = length(genelist), ncol = length(unique(mafsam$label)),
+                   dimnames = list(genelist, unique(mafsam$label)))
+mutCount <- as.data.frame(mutCount)
+mutFreq <- mutCount
+for (i in genelist) {
+  for(j in unique(mafsam$label)) {
+    tumor <- sapply(strsplit(j," (", fixed = T),"[",1)
+    if(nonSyncount.tumor[j,i] > 0) { # 若非沉默突变存在
+      mutCount[i,j] <- nonSyncount.tumor[j,i] # 记录该癌种的非沉默突变数
+      mutFreq[i,j] <- nonSyncount.tumor[j,i]/as.numeric(table(mafsam$`cancer type`)[tumor]) * 100 # 根据该癌种的样本数计算突变频率（个人认为原文并没有如此计算，原文的颜色映射似乎是按照突变数目来的，而不是突变频率）
+    }
+    if(nonSyncount.tumor[j,i] == 0 & Syncount.tumor[j,i] > 0) { # 若非沉默突变不存在，而沉默突变存在
+      mutCount[i,j] <- 0 # 则记录该癌种的突变数目为0
+      mutFreq[i,j] <- 0 # 突变频率为0
+    }
+    if(nonSyncount.tumor[j,i] == 0 & Syncount.tumor[j,i] == 0) { # 若非沉默突变不存在，沉默突变也不存在
+      mutCount[i,j] <- NA # 则此单元为空值
+      mutFreq[i,j] <- 0 # 突变频率为0
+    }
+  }
+}
+
+
+# 开始画图
+## Mutation frequency of melatonergic regulators
+ggCount <- melt(as.matrix(mutCount), varnames = c("Cancer", "Gene"), as.is = T) 
+ggFreq <- melt(as.matrix(mutFreq), varnames = c("Cancer", "Gene"), as.is = T) 
+ggData <- cbind.data.frame(ggCount, Freq = ggFreq$value)
+colnames(ggData) <- c("Cancer","Gene","Count","Freq")
+
+p <- 
+  ggplot(data = ggData) +
+  geom_tile(mapping = aes(Gene, Cancer, fill = Freq), col = "grey80") +
+  geom_text(mapping = aes(Gene, Cancer, label = Count), size =3) +
+  scale_fill_gradient(low = "white","high" = "red") + 
+  scale_x_discrete(position = "top") +
+  labs(fill = "Mutation Frequency (%)") + 
+  theme_bw() + #theme(axis.text.x = element_text(angle = 45))
+  theme(axis.title = element_blank(),
+        axis.text.x = element_text(hjust = 0, size = 10, color = "black", angle = 45),
+        axis.text.y = element_text(hjust = 1, size = 10, color = "black"),
+        axis.ticks = element_line(size=0.2, color="black"),
+        axis.ticks.length = unit(0.2, "cm"),
+        panel.background = element_blank(),
+        panel.grid = element_blank()) 
+
+ggsave(p, filename = "figures/pancancer_mygene_frequency heatmap.pdf", width = 10,height = 4)
+
+
+# SNV oncoplot
+panmaf <- read.maf(maf = "output/maf of genes of interest.txt",
+                   removeDuplicatedVariants = TRUE,
+                   isTCGA = FALSE,
+                   vc_nonSyn = c("Frame_Shift_Del",
+                                 "Frame_Shift_Ins",
+                                 "Splice_Site",
+                                 "Translation_Start_Site",
+                                 "Nonsense_Mutation",
+                                 "Nonstop_Mutation",
+                                 "In_Frame_Del",
+                                 "In_Frame_Ins",
+                                 "Missense_Mutation"))
+mafAnno <- mafsam[which(mafsam$simple_barcode %in% panmaf@data$Tumor_Sample_Barcode),]
+colnames(mafAnno)[1:2] <- c("Cancer","Tumor_Sample_Barcode")
+
+# 设置突变颜色
+mutcol <- brewer.pal(n = 10, name = 'Paired')
+names(mutcol) <- c('Frame_Shift_Del','Missense_Mutation', 'Nonsense_Mutation', 'Frame_Shift_Ins','In_Frame_Ins', 'Splice_Site', 'In_Frame_Del','Nonstop_Mutation','Translation_Start_Site','Multi_Hit')
+
+cancercolors <- NMF:::ccRamp(brewer.pal(n = 12,name = 'Paired'), length(unique(mafAnno$Cancer)))
+names(cancercolors) <- unique(mafAnno$Cancer)
+
+annocolors = list(Cancer = cancercolors)
+pdf(file = "figures/mygene_oncoprint.pdf", width = 10, height = 5)
+oncoplot(maf = panmaf, # MAF文件
+         colors = mutcol, # 突变类型的颜色
+         minMut = 0.05 * nrow(mafAnno), # 所显示的突变至少有5%的突变频率
+         bgCol = "grey95", # 瀑布图背景色
+         borderCol = NA, # 突变的边框（由于样本太多所以不设置边框）
+         annotationDat = mafAnno, # 样本注释文件
+         annotationColor = annocolors,
+         clinicalFeatures = "Cancer", # 从注释文件中显示的信息
+         sortByAnnotation = T) # 按照mafAnno的第一列排序，即按照Cancer排序
+invisible(dev.off())
+```
+
+
+# panMeth
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(ggplot2)
+library(ChAMP)
+library(data.table)
+library(randomcoloR)
+library(ggpubr)
+library(GSVA)
+library(clusterProfiler)
+library(impute)
+library(ComplexHeatmap)
+data("probe.features") # 读取甲基化450k数据的探针注释
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+# 输入文件
+merged_sample_quality_annotations.tsv，下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas>，下载地址<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
+tcga_methy450文件夹里面是甲基化数据，过滤掉了有空值的探针，均已保存为RData文件，微云链接：<https://share.weiyun.com/jRry4rlU>。下载后把tcga_methy450文件夹放到当前文件夹。
+```{r}
+# 获得同时有肿瘤和正常样本的肿瘤名
+tumors <- c("BLCA","BRCA","CESC","CHOL","COAD",
+            "ESCA","GBM","HNSC","KICH","KIRC",
+            "KIRP","LIHC","LUAD","LUSC","PAAD",
+            "PRAD","READ","STAD","THCA","UCEC")
+
+# 获得感兴趣的基因集
+gene_group <- read.table("easyinput/easy_input_gene.txt",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
+gene_group[which(gene_group$SYMBOL == "IL28A"),"SYMBOL"] <- "IFNL2" #
+frg <- gene_group$SYMBOL
+
+# 修正TCGA名称
+# https://gdc.cancer.gov/about-data/publications/pancanatlas
+load(file = "easyinput/easyinput_samAnno.Rdata")
+
+# 提取匹配到FRG基因的启动子探针
+promoter <- probe.features[which(probe.features$feature %in% c("TSS1500","TSS200")),] # 根据注释文件筛选启动子探针，也可以分析其他探针比如增强子Enhancer等等
+promoter <- promoter[which(promoter$gene %in% frg),] # 取出感兴趣基因在感兴趣位点的探针
+write.table(promoter, "output/promoter_annotation_for_interested_genes.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+
+# 获取只有感兴趣探针/基因的甲基化子集
+for (i in tumors) { # 比较慢请耐心
+  message("--",i,"...")
+  load(file.path("rawdata/tcga_methy450",paste0("TCGA-",i,"_methy450.RData"))) # 加载甲基化RData文件
+  methy450 <- as.data.frame(methy450) # 转数据框
+  rownames(methy450) <- methy450[,1] # 行名改为第一列
+  methy450 <- methy450[,-1] # 去掉第一列探针名
+  dimname <- dimnames(methy450) # 获取行名和列明
+  methy450 <- sapply(methy450, as.numeric) # 将数据全部转为数值以防报错
+  dimnames(methy450) <- dimname # 重新赋值行名和列名
+  methy450 <- as.data.frame(methy450) # 转数据框
+  
+  compb <- intersect(rownames(methy450),rownames(promoter)) # 获取甲基化数据和感兴趣探针的交集
+  methy450 <- methy450[compb,] # 取出子集
+  methy450$gene <- promoter[compb,"gene"] # 将探针名和基因名进行映射
+  
+  # 如果基因匹配多个探针，则取中位数beta值
+  methy450 <- apply(methy450[,setdiff(colnames(methy450), "gene")], 2, function(x) tapply(x, INDEX=factor(methy450$gene), FUN=median, na.rm=TRUE))
+  methy450 <- as.data.frame(methy450)
+  write.table(methy450, paste0("output/TCGA_",i,"_methy450_subset.txt"),sep = "\t",row.names = T,col.names = NA,quote = F)
+  rm(methy450); gc() # 释放内存
+}
+gc()
+
+
+## 提取甲基化数
+deltaMeth <- NULL
+for (i in tumors) {
+  message("--",i,"...")
+  
+  # 获取只包含感兴趣探针/基因的甲基化数据
+  meth_subset <- read.table(paste0("output/TCGA_",i,"_methy450_subset.txt"),sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+  colnames(meth_subset) <- substr(colnames(meth_subset),1,15)
+  
+  tumsam <- colnames(meth_subset)[substr(colnames(meth_subset),14,14) == "0"] # 获取肿瘤样本
+  norsam <- colnames(meth_subset)[substr(colnames(meth_subset),14,14) == "1"] # 获取正常样本
+  
+  outTab <- NULL
+  for (j in rownames(meth_subset)) {
+    if(i == "KICH") { # KICH没有正常的甲基化样本
+      delta <- 0 # 如果在分析KICH则delta设置为0
+      wt <- 1 # 如果在分析KICH则设置pvalue为1
+      outTab <- rbind.data.frame(outTab,
+                                 data.frame(gene = j,
+                                            tumor = i,
+                                            Delta = delta,
+                                            Pvalue = wt,
+                                            stringsAsFactors = F),
+                                 stringsAsFactors = F)
+    } else {
+      tmp1 <- as.numeric(meth_subset[j,tumsam]) # 获取肿瘤样本的beta值
+      tmp2 <- as.numeric(meth_subset[j,norsam]) # 获取正常样本的beta值
+      
+      wt <- wilcox.test(tmp1,tmp2)$p.value # wilcox检验
+      avgt <- mean(tmp1) # 肿瘤样本的平均beta值
+      avgn <- mean(tmp2) # 正常样本的平均beta值
+      delta <- avgt - avgn # delta值由肿瘤样本减去正常样本计算得到
+      
+      outTab <- rbind.data.frame(outTab,
+                                 data.frame(gene = j,
+                                            tumor = i,
+                                            Delta = delta,
+                                            Pvalue = wt,
+                                            stringsAsFactors = F),
+                                 stringsAsFactors = F)
+    }
+  }
+  deltaMeth <- rbind.data.frame(deltaMeth,
+                                outTab,
+                                stringsAsFactors = F)
+}
+write.table(deltaMeth, "output/TCGA_pancan_delta_meth_subset.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+
+
+# 开始画图
+# 设置颜色
+blue <- "#4577FF"
+red <- "#C2151A"
+orange <- "#E45737"
+green <- "#6F8B35"
+darkblue <- "#303B7F"
+darkred <- "#D51113"
+yellow <- "#EECA1F"
+
+# 产生泡泡图
+deltaMeth$gene <- factor(deltaMeth$gene,
+                         levels = rev(frg))
+
+my_palette <- colorRampPalette(c(blue,"white",orange), alpha=TRUE)(n=128)
+ggplot(deltaMeth, aes(x=tumor,y=gene)) +
+  geom_point(aes(size=-log10(Pvalue),color=Delta)) +
+  scale_color_gradientn('Delta(T-N)', 
+                        colors=my_palette) + 
+  theme_bw() +
+  theme(#panel.grid.minor = element_blank(), 
+        #panel.grid.major = element_blank(),
+        axis.text.x = element_text(angle = 45, size = 12, hjust = 0.3, vjust = 0.5, color = "black"),
+        axis.text.y = element_text(size = 12, color = rep(c(blue,red),c(3,7))),
+        axis.title = element_blank(),
+        panel.border = element_rect(size = 0.7, linetype = "solid", colour = "black"),
+        legend.position = "right",
+        plot.margin = unit(c(1,1,1,1), "lines"))
+ggsave("figures/pancancer_Meth_mygene.pdf", width = 8,height = 6)
+```
+
+
+# panMethexpr
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(ggplot2)
+library(ChAMP)
+library(data.table)
+library(randomcoloR)
+library(ggpubr)
+library(GSVA)
+library(clusterProfiler)
+library(impute)
+library(ComplexHeatmap)
+data("probe.features") # 读取甲基化450k数据的探针注释
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件
+EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv，表达矩阵，第一列是基因，之后是其在每个样本中的表达量。下载自<http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>。
+merged_sample_quality_annotations.tsv，下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas>，下载地址<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
+tcga_methy450文件夹里面是甲基化数据，过滤掉了有空值的探针，均已保存为RData文件，微云链接：<https://share.weiyun.com/jRry4rlU>。下载后把tcga_methy450文件夹放到当前文件夹。
+```{r}
+# 获得同时有肿瘤和正常样本的肿瘤名
+tumors <- c("BLCA","BRCA","CESC","CHOL","COAD",
+            "ESCA","GBM","HNSC","KICH","KIRC",
+            "KIRP","LIHC","LUAD","LUSC","PAAD",
+            "PRAD","READ","STAD","THCA","UCEC")
+
+# 获得感兴趣的基因集
+gene_group <- read.table("easyinput/easy_input_gene.txt",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
+gene_group[which(gene_group$SYMBOL == "IL28A"),"SYMBOL"] <- "IFNL2" #
+frg <- gene_group$SYMBOL
+
+# 修正TCGA名称
+# https://gdc.cancer.gov/about-data/publications/pancanatlas
+load(file = "easyinput/easyinput_samAnno.Rdata")
+
+# 提取匹配到FRG基因的启动子探针
+promoter <- probe.features[which(probe.features$feature %in% c("TSS1500","TSS200")),]# 根据注释文件筛选启动子探针，也可以分析其他探针比如增强子Enhancer等等
+promoter <- promoter[which(promoter$gene %in% frg),] # 取出感兴趣基因在感兴趣位点的探针
+write.table(promoter, "output/promoter_annotation_for_interested_genes.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+
+# 快速读取表达谱
+# https://gdc.cancer.gov/about-data/publications/pancanatlas
+load(file = "easyinput/pancancer_EBPlusPlusAdjustexpr_CNVinput.Rdata")
+
+comgene <- intersect(rownames(expr),frg) # 取部分表达谱（感兴趣的基因集）
+expr_sub <- expr[comgene,]
+colnames(expr_sub) <- substr(colnames(expr_sub),1,15)
+expr_sub <- expr_sub[,!duplicated(colnames(expr_sub))]
+
+for (i in tumors) {
+  message("--",i,"...")
+  sam <- samAnno[which(samAnno$`cancer type` == i),"simple_barcode"]
+  comsam <- intersect(colnames(expr_sub), sam)
+  
+  tumsam <- comsam[substr(comsam,14,14) == "0"] # 获得肿瘤样本
+  norsam <- comsam[substr(comsam,14,14) == "1"] # 获得正常样本
+  
+  expr_subset <- expr_sub[,c(tumsam,norsam)]
+  expr_subset[expr_subset < 0] <- 0 # 这份数据里存在负值，即便负值比较小，但也要矫正，如果使用其他泛癌表达谱根据情况而定
+  expr_subset <- as.data.frame(impute.knn(as.matrix(expr_subset))$data)
+  write.table(expr_subset, paste0("output/TCGA_",i,"_expr_subset.txt"),sep = "\t",row.names = T,col.names = NA,quote = F)
+}
+rm(expr); gc()
+
+
+# 相关性分析
+corExprMeth <- NULL
+for (i in tumors) {
+  message("--",i,"...")
+  
+  # 读取只包含感兴趣基因的表达谱和甲基化数据
+  expr_subset <- read.table(paste0("output/TCGA_",i,"_expr_subset.txt"),sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+  meth_subset <- read.table(paste0("output/TCGA_",i,"_methy450_subset.txt"),sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+  colnames(meth_subset) <- substr(colnames(meth_subset),1,15)
+  
+  comsam <- intersect(colnames(expr_subset),colnames(meth_subset)) # 获取相同的样本
+  tumsam <- comsam[substr(comsam,14,14) == "0"] # 仅获取肿瘤样本
+  
+  expr_subset <- expr_subset[,tumsam] # 取出表达谱子集
+  meth_subset <- meth_subset[,tumsam] # 取出甲基化子集
+  
+  corTab <- NULL
+  for (j in rownames(meth_subset)) {
+    tmp1 <- as.numeric(meth_subset[j,]) # 甲基化beta值
+    tmp2 <- as.numeric(expr_subset[j,]) # 表达谱
+    cor.res <- cor.test(tmp1,tmp2, method = "spearman") # 启动子甲基化和表达谱的spearman相关性
+    
+    corTab <- rbind.data.frame(corTab,
+                               data.frame(gene = j,
+                                          tumor = i,
+                                          Correlation = ifelse(is.na(cor.res$estimate), 0, cor.res$estimate),
+                                          Pvalue = ifelse(is.na(cor.res$p.value), 1, cor.res$p.value),
+                                          stringsAsFactors = F),
+                               stringsAsFactors = F)
+  }
+  corExprMeth <- rbind.data.frame(corExprMeth,
+                                  corTab,
+                                  stringsAsFactors = F)
+}
+write.table(corExprMeth, "output/TCGA_pancan_correlation_expr_meth_subset.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+
+# 开始画图
+# 设置颜色
+blue <- "#4577FF"
+red <- "#C2151A"
+orange <- "#E45737"
+green <- "#6F8B35"
+darkblue <- "#303B7F"
+darkred <- "#D51113"
+yellow <- "#EECA1F"
+
+# 生成泡泡图
+corExprMeth$gene <- factor(corExprMeth$gene,
+                           levels = rev(comgene))
+
+my_palette <- colorRampPalette(c(blue,"white",orange), alpha=TRUE)(n=128)
+ggplot(corExprMeth, aes(x=tumor,y=gene)) +
+  geom_point(aes(size=-log10(Pvalue),color=Correlation)) +
+  scale_color_gradientn('Correlation', 
+                        colors=my_palette) +
+  theme_bw() +
+  theme(#panel.grid.minor = element_blank(), 
+        #panel.grid.major = element_blank(),
+        axis.text.x = element_text(angle = 45, size = 12, hjust = 0.3, vjust = 0.5, color = "black"),
+        axis.text.y = element_text(size = 12, color = rep(c(blue,red),c(3,7))),
+        axis.title = element_blank(),
+        panel.border = element_rect(size = 0.7, linetype = "solid", colour = "black"),
+        legend.position = "right",
+        plot.margin = unit(c(1,1,1,1), "lines"))
+ggsave("figures/pancancer_MethExpr_mygene.pdf", width = 8,height = 6)
+```
+
+
+# 绘制基因位置的环形图
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(RCircos)
+library(magrittr)
+library(tidyverse)
+library(rtracklayer)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 目标基因位置的获取
+easyinput_gene.txt，根据需要定义一个基因集，后面将把基因名标在画成环状的染色体上。
+hg38.gtf，基因组上所有基因所在位置，从中提取出目标基因的位置。可以从[gencode](https://www.gencodegenes.org)下载<https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_43/gencode.v43.annotation.gtf.gz>。
+```{r eval=FALSE}
+# 可以从文件读入
+genes <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
+
+# 根据基因集提取出目的基因所在位置
+gene_pos <- import("easyinput/gencode.v43.annotation.gtf") %>% # 载入gtf文件
+  as.data.frame %>% 
+  # 仅选择基因，去除转录本等等
+  filter(source == "HAVANA", type == "gene") %>%  
+  # 保留基因位置和名称
+  dplyr::select(seqnames, start, end, gene_name) %>%   
+  # 挑选目的基因
+  filter(gene_name %in% genes)
+head(gene_pos)
+
+# 内圈散点图我们随机生成一列数值
+gene_pos$gene_dot <- rnorm(nrow(gene_pos), 0, 2)
+# 加载染色体Ideogram
+(data("UCSC.HG38.Human.CytoBandIdeogram"))
+
+# 开始画图
+pdf(file="figures/mygene_circGene.pdf", height=5, width=5)
+
+# 根据hg38构建染色体位置，只保留chr1-22,X,Y，在圈内部构建三圈轨道
+RCircos.Set.Core.Components(UCSC.HG38.Human.CytoBandIdeogram,
+                            chr.exclude = NULL,
+                            tracks.inside = 3, 
+                            tracks.outside = 0)
+RCircos.Set.Plot.Area()
+
+# 绘制染色体
+RCircos.Chromosome.Ideogram.Plot()
+
+# 在第一圈用散点在基因所在的位置标注数值
+# 调整配色
+params <- RCircos.Get.Plot.Parameters()
+params$track.background <- "grey" # 第三圈默认配色为wheat，模仿原文修改为灰色
+RCircos.Reset.Plot.Parameters(params)
+
+RCircos.Scatter.Plot(gene_pos,
+                     data.col = 5, # 用第5列的数值作为点的纵坐标
+                     by.fold = 1, # 点的颜色cutoff，大于等于1的基因显示为红色点，小于等于-1的显示为蓝色点，-1到1之间为黑点
+                     track.num = 1,
+                     side = "in")
+
+# 在第二圈绘制线段标注基因所在的位置
+RCircos.Gene.Connector.Plot(genomic.data = gene_pos, 
+                            track.num = 2, 
+                            side = "in")
+
+# 在第三圈标注基因名
+RCircos.Gene.Name.Plot(gene_pos, 
+                       name.col = 4,
+                       track.num = 3, 
+                       side = "in")
+
+dev.off()
+```
+
+
+# 泛癌热图，同时对感兴趣基因绘制泛癌箱型图。
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(data.table)
+library(impute)
+library(ClassDiscovery)
+library(ComplexHeatmap)
+source("scripts/twoclasslimma.R")
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件
+merged_sample_quality_annotations.tsv，下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas>，下载地址<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>
+EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv，表达矩阵，第一列是基因，之后是其在每个样本中的表达量。下载自<http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>
+```{r}
+# 定义感兴趣的基因集(https://www.genecards.org/cgi-bin/carddisp.pl?gene=VIRMA)
+genes <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
+
+# 获得同时有肿瘤和正常样本的肿瘤名
+tumors <- c("BLCA","BRCA","CESC","CHOL","COAD",
+            "ESCA","GBM","HNSC","KICH","KIRC",
+            "KIRP","LIHC","LUAD","LUSC","PAAD",
+            "PRAD","READ","STAD","THCA","UCEC")
+
+# 修正TCGA名称
+# https://gdc.cancer.gov/about-data/publications/pancanatlas
+rawAnno <- read.delim("rawdata/merged_sample_quality_annotations.tsv",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T) # 数据来自PanCanAtlas
+rawAnno$simple_barcode <- substr(rawAnno$aliquot_barcode,1,15)
+samAnno <- rawAnno[!duplicated(rawAnno$simple_barcode),c("cancer type", "simple_barcode")]
+samAnno <- samAnno[which(samAnno$`cancer type` != ""),]
+save(samAnno,file = "easyinput/simple_sample_annotation.Rdata")
+
+# 快速读取表达谱
+# https://gdc.cancer.gov/about-data/publications/pancanatlas
+expr <- fread("rawdata/EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv",sep = "\t",stringsAsFactors = F,check.names = F,header = T)
+expr <- as.data.frame(expr); rownames(expr) <- expr[,1]; expr <- expr[,-1]
+gene <- sapply(strsplit(rownames(expr),"|",fixed = T), "[",1) # 调整行名
+expr$gene <- gene
+expr <- expr[!duplicated(expr$gene),] # 移除重复样本
+rownames(expr) <- expr$gene; expr <- expr[,-ncol(expr)]
+save(expr,file = "easyinput/pancancer_EBPlusPlusAdjust_expr.Rdata")
+
+comgene <- intersect(rownames(expr),genes) # 取部分表达谱，全部匹配
+expr_sub <- expr[comgene,]
+colnames(expr_sub) <- substr(colnames(expr_sub),1,15)
+expr_sub <- expr_sub[,!duplicated(colnames(expr_sub))]
+
+rm(expr); gc()
+
+
+# 差异表达分析
+# 初始化差异表达矩阵以存储每个基因在每个癌种种类里的log2FoldChange值
+degRes <- as.data.frame(matrix(NA,nrow = length(comgene),ncol = length(tumors),
+                 dimnames = list(comgene,tumors)))
+for (i in tumors) {
+  message("--",i,"...")
+  sam <- samAnno[which(samAnno$`cancer type` == i),"simple_barcode"]
+  comsam <- intersect(colnames(expr_sub), sam)
+  
+  tumsam <- comsam[substr(comsam,14,14) == "0"] # 获得肿瘤样本
+  norsam <- comsam[substr(comsam,14,14) == "1"] # 获得正常样本
+  
+  expr_subset <- expr_sub[,c(tumsam,norsam)]
+  expr_subset[expr_subset < 0] <- 0 # 这份数据里存在负值，即便负值比较小，但也要矫正，如果使用其他泛癌表达谱根据情况而定
+  expr_subset <- as.data.frame(impute.knn(as.matrix(expr_subset))$data) # 这份泛癌数据存在空值，所以做缺失值填补
+  
+  # 输出子表达谱
+  write.table(expr_subset, paste0("output/TCGA_",i,"_expr_subset.txt"),sep = "\t",row.names = T,col.names = NA,quote = F)
+  
+  # 利用limma脚本做差异表达分析（脚本会识别数据的量级来确定是否进行对数化）
+  subt <- data.frame(condition = rep(c("tumor","normal"),c(length(tumsam),length(norsam))),
+                     row.names = colnames(expr_subset),
+                     stringsAsFactors = F)
+  twoclasslimma(subtype  = subt, # 亚型信息 (必须含有一列叫'condition')
+                featmat  = expr_subset, # 表达谱 (会自动判断数据量级)
+                treatVar = "tumor", # “治疗组”的名（就是要比较的组）
+                ctrlVar  = "normal", # “对照组”的名（就是被比较的组）
+                prefix   = paste0("output/TCGA_",i), # 差异表达的文件的前缀
+                overwt   = T, # 是否覆盖已经存在的差异表达文件
+                sort.p   = F, # 是否排序p值
+                verbose  = TRUE, # 是否简化输出
+                res.path = ".") # 输出结果
+  
+  # 加载差异表达文件
+  res <- read.table(paste0("output/TCGA_",i,"_limma_test_result.tumor_vs_normal.txt"),sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+  degRes[,i] <- res[rownames(degRes),"log2fc"]
+}
+
+write.table(degRes,file = "output/log2fc of m6a genes between tumor and normal samples in pancancer.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+
+
+## 绘制log2FoldChange的热图
+indata <- degRes
+hcs <- hclust(distanceMatrix(as.matrix(indata), "euclidean"), "ward.D") # 对log2FC做聚类
+
+## 创建行注释
+annRow <- data.frame(row.names = genes,
+                     class = rep(c("Positive","Negative"),c(3,2)))
+annRow$class <- factor(annRow$class, levels = c("Positive","Negative"))
+annColors <- list(class = c("Positive" = "#C2151A",
+                            "Negative" = "#4577FF"))
+colPattern <- c("#183869","#4195C1","white","#CB5746","#62011D") # 设置热图的颜色板
+
+pdf(file = "figures/pancancer_mygene_heatmap_log2fc.pdf", width = 6, height = 6)
+pheatmap(as.matrix(indata[rownames(annRow),]),
+         border_color = "black", # 显示热图单元格的边框并设置为黑色
+         cluster_rows = F, # 行聚类
+         cluster_cols = T, # 列聚类
+         show_rownames = T, # 显示行名
+         show_colnames = T, # 显示列名
+         annotation_row = annRow, # 行注释
+         annotation_colors = annColors, # 注释颜色
+         #cellwidth = 12, # 单元格宽度
+         #cellheight = 12, # 单元格高度
+         color = colorRampPalette(colPattern)(64), # 热图颜色
+         name = "log2FoldChange") # 热图入值的命名
+dev.off()
+
+
+# 批量绘制箱型图(y轴的标签可以最后用AI补上)
+geneInterest <- "GZMK" # 设置感兴趣的基因
+darkred <- "#F2042C"
+darkblue <- "#21498D"
+
+pdf(file = paste0("figures/pancancer_boxplot_", geneInterest, ".pdf"), width = 10,height = 10)
+par(mfrow = c(4,5))
+for (i in tumors) {
+  message("--",i,"...")
+  sam <- samAnno[which(samAnno$`cancer type` == i),"simple_barcode"]
+  comsam <- intersect(colnames(expr_sub), sam)
+  
+  tumsam <- comsam[substr(comsam,14,14) == "0"] # 获得肿瘤样本
+  norsam <- comsam[substr(comsam,14,14) == "1"] # 获得正常样本
+  
+  # 读入子表达谱
+  expr_subset <- read.table(paste0("output/TCGA_",i,"_expr_subset.txt"),sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+  
+  exprTgene <- log2(as.numeric(expr_subset[geneInterest,tumsam]) + 1) # 取出肿瘤样本特定基因的表达并对数化
+  exprNgene <- log2(as.numeric(expr_subset[geneInterest,norsam]) + 1) # 取出正常样本特定基因的表达并对数化
+  
+  par(bty="o", mgp = c(1.5,.33,0), 
+      mar=c(0.1,1.5,2,0.1), # 为了使得图形尽可能紧凑，因为四边的距离分别设置为0.1（底部空出一小段距离），1.5（左边因为要放y轴刻度），2（顶部因为肿瘤名写在顶部），0.1（右部空出一小段距离）
+      las=1, tcl=-.25,las = 1, xpd = F)
+  boxplot(exprNgene,exprTgene,
+          col = c(darkblue,darkred), # 箱子颜色
+          outline = FALSE, # 移除离群值
+          ylab = "", # 不显示y轴名
+          xaxt='n') # 移除x轴上的标记
+  mtext(side = 3, text = i,line = 0.5) # 在图形顶部输入肿瘤名
+}
+invisible(dev.off())
+```
+
+
+# panDiff
+分析基因在肿瘤与正常组织中的差异表达情况并绘制拼接的点图与柱状图。
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(ggplot2)
+library(data.table)
+library(randomcoloR)
+library(ggpubr)
+library(GSVA)
+library(clusterProfiler)
+library(impute)
+library(ComplexHeatmap)
+source("scripts/twoclasslimma.R")
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件
+```{r}
+# 设置颜色
+blue <- "#4577FF"
+red <- "#C2151A"
+orange <- "#E45737"
+green <- "#6F8B35"
+darkblue <- "#303B7F"
+darkred <- "#D51113"
+yellow <- "#EECA1F"
+
+# 获得同时有肿瘤和正常样本的肿瘤名
+tumors <- c("BLCA","BRCA","CESC","CHOL","COAD",
+            "ESCA","GBM","HNSC","KICH","KIRC",
+            "KIRP","LIHC","LUAD","LUSC","PAAD",
+            "PRAD","READ","STAD","THCA","UCEC")
+
+# 获得感兴趣的基因集
+genes <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
+
+load(file = "easyinput/pancancer_EBPlusPlusAdjust_expr.Rdata")
+load(file = "easyinput/simple_sample_annotation.Rdata")
+
+comgene <- intersect(rownames(expr),genes) # 取部分表达谱（感兴趣的基因集）
+expr_sub <- expr[comgene,]
+colnames(expr_sub) <- substr(colnames(expr_sub),1,15)
+expr_sub <- expr_sub[,!duplicated(colnames(expr_sub))]
+
+
+# 差异表达分析
+exprTab <- ndegs <- NULL
+log2fc.cutoff <- log2(1) # 设置差异表达的阈值 (FoldChange = 1.5)
+fdr.cutoff <- 0.05 # 设置差异表达的阈值 (FDR = 0.05)
+
+for (i in tumors) {
+  message("--",i,"...")
+  sam <- samAnno[which(samAnno$`cancer type` == i),"simple_barcode"]
+  comsam <- intersect(colnames(expr_sub), sam)
+  
+  tumsam <- comsam[substr(comsam,14,14) == "0"] # 获得肿瘤样本
+  norsam <- comsam[substr(comsam,14,14) == "1"] # 获得正常样本
+  
+  expr_subset <- expr_sub[,c(tumsam,norsam)]
+  expr_subset[expr_subset < 0] <- 0 # 这份数据里存在负值，即便负值比较小，但也要矫正，如果使用其他泛癌表达谱根据情况而定
+  expr_subset <- as.data.frame(impute.knn(as.matrix(expr_subset))$data)
+  write.table(expr_subset, paste0("output/TCGA_",i,"_expr_subset.txt"),sep = "\t",row.names = T,col.names = NA,quote = F)
+  
+  subt <- data.frame(condition = rep(c("tumor","normal"),c(length(tumsam),length(norsam))),
+                     row.names = colnames(expr_subset),
+                     stringsAsFactors = F)
+  twoclasslimma(subtype  = subt, # 亚型信息 (必须含有一列叫'condition')
+                featmat  = expr_subset, # 表达谱 (会自动判断数据量级)
+                treatVar = "tumor", # “治疗组”的名（就是要比较的组）
+                ctrlVar  = "normal", # “对照组”的名（就是被比较的组）
+                prefix   = paste0("output/TCGA_",i), # 差异表达的文件的前缀
+                overwt   = T, # 是否覆盖已经存在的差异表达文件
+                sort.p   = F, # 是否排序p值
+                verbose  = TRUE, # 是否简化输出
+                res.path = ".") # 输出结果
+  
+  # 加载差异表达文件
+  res <- read.table(paste0("output/TCGA_",i,"_limma_test_result.tumor_vs_normal.txt"),sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+  upgene <- res[which(res$log2fc > log2fc.cutoff & res$padj < fdr.cutoff),] # 获取上调基因
+  dngene <- res[which(res$log2fc < -log2fc.cutoff & res$padj < fdr.cutoff),] # 获取下调基因
+  
+  # 基因差异表达的数目以产生图片的上部注释
+  if(nrow(upgene) > 0) {
+    nup <- nrow(upgene)
+  } else {nup <- 0}
+  
+  if(nrow(dngene) > 0) {
+    ndn <- nrow(dngene)
+  } else {ndn <- 0}
+  
+  exprTab <- rbind.data.frame(exprTab,
+                              data.frame(gene = rownames(res),
+                                         log2fc = res$log2fc,
+                                         FDR = res$padj,
+                                         tumor = i,
+                                         stringsAsFactors = F),
+                              stringsAsFactors = F)
+  ndegs <- rbind.data.frame(ndegs,
+                            data.frame(tumor = i,
+                                       Group = c("UP","DOWN"),
+                                       Number = c(nup,ndn),
+                                       stringsAsFactors = F),
+                            stringsAsFactors = F)
+}
+ndegs$Group <- factor(ndegs$Group, levels = c("UP","DOWN"))
+
+
+# 开始画图
+# 产生上部注释
+p_top <- ggplot(data = ndegs) +
+  geom_bar(mapping = aes(x = tumor, y = Number, fill = Group), 
+           stat = 'identity',position = 'stack') + 
+  scale_fill_manual(values = c(orange,green)) +
+  theme_classic() + 
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        plot.margin = unit(c(1,0,0,1), "lines"))
+
+# 产生下部泡泡图
+exprTab$gene <- factor(exprTab$gene,
+                       levels = rev(genes))
+my_palette <- colorRampPalette(c(green,"white",orange), alpha=TRUE)(n=128)
+p_center <- ggplot(exprTab, aes(x=tumor,y=gene)) +
+  geom_point(aes(size=-log10(FDR),color=log2fc)) +
+  scale_color_gradientn('log2(FC)', 
+                        colors=my_palette) + 
+  theme_bw() +
+  theme(#panel.grid.minor = element_blank(), 
+        #panel.grid.major = element_blank(),
+        axis.text.x = element_text(angle = 45, size = 12, hjust = 0.3, vjust = 0.5, color = "black"),
+        axis.text.y = element_text(size = 12, color = rep(c(blue,red),c(3,7))),
+        axis.title = element_blank(),
+        panel.border = element_rect(size = 0.7, linetype = "solid", colour = "black"),
+        plot.margin = unit(c(0,0,1,1), "lines")) 
+
+# 排布图片
+ggarrange(p_top,
+          p_center, 
+          nrow = 2, ncol = 1,
+          align = "v",
+          heights = c(2,6),
+          common.legend = F)
+
+ggsave("figures/pancancer_mygene_DEGs.pdf", width = 8, height = 8)
+rm(expr); gc()
+```
+
+
+# friends
+输入基因列表，用GO注释的相似性找它的好朋友，画出云雨图。
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(GOSemSim)
+library(reshape2)
+library(ggplot2)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件
+输入的数据为基因名，第一列是ENTREZ ID, 第二列是gene SYMBOL
+```{r}
+gene_list <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
+gene = bitr(gene_list, fromType="SYMBOL", toType="ENTREZID", OrgDb="org.Hs.eg.db")
+id_gsym <- gene
+```
+
+## 计算相似性
+```{r}
+#用godata()函数来构建相应物种的Molecular Function本体的GO DATA
+mf <- godata('org.Hs.eg.db', ont="MF", computeIC = FALSE)
+#用godata()函数来构建相应物种的Cellular Component本体的GO DATA
+cc <- godata('org.Hs.eg.db', ont="CC", computeIC = FALSE)
+#用godata()函数来构建相应物种的Biological Process本体的GO DATA
+#bp <- godata('org.Hs.eg.db', ont="BP", computeIC = FALSE)
+
+#用mgeneSim来计算MF本体，基因之间的语义相似度，结果为一个行列相同的矩阵
+simmf <- mgeneSim(id_gsym$ENTREZID, semData = mf, measure = "Wang", drop = NULL, combine = "BMA")
+#用mgeneSim来计算CC本体，基因之间的语义相似度，结果为一个行列相同的矩阵
+simcc <- mgeneSim(id_gsym$ENTREZID, semData = cc, measure = "Wang", drop = NULL, combine = "BMA")
+#用mgeneSim来计算BP本体，基因之间的语义相似度，结果为一个行列相同的矩阵
+#simbp <- mgeneSim(id_gsym$ENTREZID, semData = bp, measure = "Wang", drop = NULL, combine = "BMA")
+
+#计算基因在MF本体和CC本体下的几何平均值，一个打分值同时包括基因的分子功能和细胞定位两个信息
+fsim <- sqrt(simmf * simcc)
+#或者计算基因在MF、CC、BP本体下的几何平均值
+#fsim <- (simmf * simcc * simbp)^(1/3)
+
+#将基因的名字由ENTREZID改为gene SYMBOL，方便看懂。
+colnames(fsim) = id_gsym$SYMBOL
+rownames(fsim) = id_gsym$SYMBOL
+
+#将基因自己和自己的相似度设为NA，方便接下来去掉。
+for (i in 1:ncol(fsim)){
+  fsim[i,i] <- NA
+}
+
+y <- melt(fsim) #把宽格式数据转化成长格式，其实就是把正方形矩阵转成三列
+y <- y[!is.na(y$value),] #删掉带NA的行
+
+# 把每两个基因之间的相似度保存到文件，只需要保存第一列基因名和第三列数值
+#write.csv(y[,c(1,3)], "very_easyinput.csv", row.names = F)
+
+
+## 开始画图
+library(RColorBrewer)
+# Define the number of colors you want
+nb.cols <- 33
+mycolors <- colorRampPalette(brewer.pal(12, "Set3"))(nb.cols)
+#计算每个基因跟其他基因相似度的平均值
+y.mean <- aggregate(.~Var1,y,mean) 
+m <- y.mean$value
+names(m) <- y.mean$Var1
+#按平均值给基因名排序，便于画图
+y$Var1 <- factor(y$Var1, levels=names(sort(m)))
+
+f <- function(y) {
+  r <- quantile(y, probs = c(0.05, 0.25, 0.5, 0.75, 0.95))
+  r[3] <- mean(y)
+  names(r) <- c("ymin", "lower", "middle", "upper", "ymax")
+  r
+}
+
+p1 <- ggplot(y, aes(Var1, value, fill = factor(Var1))) + 
+  scale_fill_manual(values = mycolors) + #配色
+  guides(fill=FALSE) + #不显示图例
+
+  stat_summary(fun.data= f, geom='boxplot') + 
+  geom_hline(aes(yintercept=0.85), linetype="dashed") + #画一条虚线
+
+  coord_flip() + # x、y坐标轴互换
+  xlab("") + ylab("") + 
+  theme(axis.text.x = element_text(family = "Arial", size = 16, face = "bold"),
+                          axis.text.y = element_text(family = "Arial", size = 16, face = "bold")) + 
+  theme_bw() + 
+  theme(panel.border=element_rect(size=1)) #边框粗细 
+p1
+
+# 保存到pdf文件
+ggsave("figures/mygene_friends_box.pdf",height = 8,width = 12)
+```
+
+
+# survivalScape
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(data.table)
+library(survival)
+library(pheatmap)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件的获得
+需要表达矩阵和生存数据
+- easy_input_gene.txt，用到`SYMBOL`列，将提取这些基因的表达矩阵。
+- tcga_RSEM_gene_tpm和gencode.v23.annotation.gene.probemap，表达矩阵和Gene mapping，跟FigureYa208FPI的一样，微云链接：<https://share.weiyun.com/c8GQyxR4>。**建议自己动手，从xena网站下载**，下载方式：
+- 这里跟FigureYa55panCancer_violin保持一致，从[XENA](https://xenabrowser.net/datapages/)下载UCSC Toil RNA-seq Recompute TPM：[TCGA Pan-Cancer (PANCAN) (41 datasets)](https://xenabrowser.net/datapages/?cohort=TCGA%20Pan-Cancer%20(PANCAN)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443)里的[TOIL RSEM tpm (n=10,535) UCSC Toil RNA-seq Recompute](https://toil.xenahubs.net/download/tcga_rsem_isoform_tpm.gz)，[Gene Mapping](https://toil.xenahubs.net/download/probeMap/gencode.v23.annotation.transcript.probemap)
+- 或者下载GDC pipeline的FPKM-UQ：[GDC Pan-Cancer (PANCAN) (17 datasets)](https://xenabrowser.net/datapages/?cohort=GDC%20Pan-Cancer%20(PANCAN)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443) 里的[HTSeq - FPKM-UQ (n=11,768) GDC Hub](https://gdc.xenahubs.net/download/GDC-PANCAN.htseq_fpkm-uq.tsv.gz)，[Gene Mapping](https://gdc.xenahubs.net/download/gencode.v22.annotation.gene.probeMap)
+- pancancerSurvivalData.txt，样本注释及生存信息，从[XENA](https://xenabrowser.net/datapages/)下载后整理而成。
+- 生存信息的下载方式：[Curated clinical data (n=12,591)](https://xenabrowser.net/datapages/?dataset=Survival_SupplementalTable_S1_20171025_xena_sp&host=https%3A%2F%2Fpancanatlas.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443)里的[Curated clinical data](https://pancanatlas.xenahubs.net/download/Survival_SupplementalTable_S1_20171025_xena_sp.gz)
+- 样本信息的下载方式：[TCGA Pan-Cancer (PANCAN) (41 datasets) phenotype](https://xenabrowser.net/datapages/?cohort=TCGA%20Pan-Cancer%20(PANCAN)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443)里的[sample type and primary disease (n=12,804) Pan-Cancer Atlas Hub](https://pancanatlas.xenahubs.net/download/TCGA_phenotype_denseDataOnlyDownload.tsv.gz)。
+```{r eval=FALSE}
+## 读取泛癌表达谱和注释文件
+# 文件较大，占内存，请谨慎操作
+panexpr <- fread("rawdata/tcga_RSEM_gene_tpm",sep = "\t",header = T,check.names = F,stringsAsFactors = F)
+annopb <- read.delim("rawdata/gencode.v23.annotation.gene.probemap",row.names = 1,check.names = F,stringsAsFactors = F,header = T,sep = "\t")
+
+# 匹配基因名
+panexpr <- as.data.frame(panexpr)
+rownames(panexpr) <- panexpr$sample; panexpr <- panexpr[,-1]
+comgene <- intersect(rownames(annopb), rownames(panexpr))
+panexpr <- panexpr[comgene,]; annopb <- annopb[comgene,]
+panexpr$genename <- annopb$gene; panexpr <- panexpr[!duplicated(panexpr$genename),]
+rownames(panexpr) <- panexpr$genename; panexpr <- panexpr[,-ncol(panexpr)]
+
+save(panexpr, file = "easyinput/pancancer_expr_tpm.Rdata")
+save(annopb, file = "easyinput/pancancer_annopb.Rdata")
+
+## 读取目标基因及其所在的分组信息，用于最后画热图
+gene_group <- read.table("easyinput/easy_input_gene.txt",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
+
+# 提取目标基因的表达矩阵
+panexpr <- panexpr[gene_group$SYMBOL,]
+gc() # 释放内存
+
+# 还原表达谱（以下步骤请根据自己表达谱的情况来）
+panexpr <- 2^panexpr - 0.001 # 原始数据为log2(x+0.001)
+panexpr[panexpr < 0] <- 0 # 小于0的值拉到0
+# 重新对数化
+panexpr <- log2(panexpr + 1) 
+
+# 剔除表达量比较奇怪的基因，出自FigureYa35batch_bestSeparationV3_update
+panexpr <- panexpr[,apply(panexpr, 1, sd) > 0] # 取方差大于1的基因
+
+## 读取样本注释和生存信息
+pansurv <- read.table("rawdata/pancancerSurvivalData.txt",sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+rownames(pansurv) <- paste0(rownames(pansurv),"-01") # 创建原位癌barcode
+
+save(pansurv, file = "easyinput/pancancer_surv.Rdata")
+
+# 取出例文癌症
+tumors <- unique(pansurv$type) # 提取有生存信息的癌种
+comsam <- intersect(colnames(panexpr),rownames(pansurv)) # 提取共享的样本
+pansurv <- pansurv[comsam,]
+panexpr <- panexpr[,comsam]
+tumors <- unique(pansurv$type)
+
+# 循环计算基因与癌症的预后关系
+# cox分析的数据初始化
+survland.coxhr <- matrix(NA,nrow = nrow(gene_group),ncol = length(tumors),dimnames = list(gene_group$SYMBOL,tumors)) # 初始化cox分析HR结果
+survland.coxp <- matrix(NA,nrow = nrow(gene_group),ncol = length(tumors),dimnames = list(gene_group$SYMBOL,tumors)) # 初始化cox分析p值结果
+survland.coxplot <- matrix(0,nrow = nrow(gene_group),ncol = length(tumors),dimnames = list(gene_group$SYMBOL,tumors)) # 初始化绘图数据
+
+# logrank分析的数据初始化
+survland.logrankhr <- matrix(NA,nrow = nrow(gene_group),ncol = length(tumors),dimnames = list(gene_group$SYMBOL,tumors)) # 初始化logrank分析hr值结果
+survland.logrankp <- matrix(NA,nrow = nrow(gene_group),ncol = length(tumors),dimnames = list(gene_group$SYMBOL,tumors)) # 初始化logrank分析p值结果
+survland.logrankplot <- matrix(0,nrow = nrow(gene_group),ncol = length(tumors),dimnames = list(gene_group$SYMBOL,tumors)) # 初始化绘图数据
+
+# 循环计算每一个癌症
+for(t in tumors) {
+  for (g in rownames(panexpr)) { # 循环计算每一个基因
+    sam <- rownames(pansurv[which(pansurv$type == t),]) #提取当前癌症的sample ID
+    expr <- as.numeric(panexpr[g,sam]) # 提取当前基因的表达量
+    
+    expr.surv <- data.frame(futime = pansurv[sam,"OS.time"], # 提取当前癌症的生存信息
+                            fustat = pansurv[sam,"OS"], # 提取当前癌症的生存信息
+                            expr = expr, # 基因表达量
+                            stringsAsFactors = F)
+    
+    ## 方法一：cox
+    cox <- coxph(Surv(futime,fustat) ~ expr, data = expr.surv) # cox分析
+    coxSummary <- summary(cox)
+    hr <- as.numeric(coxSummary$coefficients[,"exp(coef)"])[1] # 提出HR
+    pvalue <- as.numeric(coxSummary$coefficients[,"Pr(>|z|)"])[1] # 提出p值
+    survland.coxhr[g,t] <- hr
+    survland.coxp[g,t] <- pvalue
+    
+    # 为画图准备矩阵
+    if(pvalue < 0.05) { # 如果p值显著的话存储数据
+      survland.coxplot[g,t] <- ifelse(hr > 1, 1, -1) # HR>1为风险因素，记为“1”，HR<1为保护因素，记为-1，其余默认为0
+    }
+    
+    ## 方法二：logrank
+    # 用中值（median）为样本分组，如果想用最佳分组，可参考FigureYa35batch_bestSeparationV3_update
+    expr.surv$group = ifelse(expr > median(expr),"high","low")
+    expr.surv$group <- factor(expr.surv$group, levels = c("low", "high"))
+    
+    data.survdiff <- survdiff(Surv(futime,fustat) ~ group, data = expr.surv)
+    pvalue <- 1 - pchisq(data.survdiff$chisq, length(data.survdiff$n) - 1)
+    hr <- (data.survdiff$obs[2]/data.survdiff$exp[2])/(data.survdiff$obs[1]/data.survdiff$exp[1])
+    survland.logrankhr[g,t] <- hr
+    survland.logrankp[g,t] <- pvalue
+    
+    # 为画图准备矩阵
+    if(pvalue < 0.05) { # 如果p值显著的话存储数据
+      survland.logrankplot[g,t] <- ifelse(hr > 1, 1, -1) # HR>1为风险因素，记为“1”，HR<1为保护因素，记为-1，其余默认为0
+    }
+  }
+}
+
+## 保存到文件，便于DIY其他形式的图
+# 或者以更大范围的基因（例如全基因组）作为输入，然后用HR和pvalue筛选出genes associated with the overall survival of patients (worse/better survival) in at least one cancer type或你关心的几种癌症或所有癌症
+# cox
+write.table(survland.coxplot, file = "output/cox_genes associated with the OS.txt", sep = "\t", row.names = T, col.names = T, quote = F)
+write.table(survland.coxhr,file = "output/cox HR in survival landscape.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+write.table(survland.coxp,file = "output/cox pvalue in survival landscape.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+
+# logrank
+write.table(survland.logrankplot, file = "output/logrank_genes associated with the OS.txt", sep = "\t", row.names = T, col.names = T, quote = F)
+write.table(survland.logrankhr,file = "output/logrank HR in survival landscape.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+write.table(survland.logrankp,file = "output/logrank pvalue in survival landscape.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+
+
+# 开始画图
+# 自定义颜色
+red <- "#D02E20"
+blue <- "#4D76B7"
+green <- "#50B544"
+yellow <- "#F8C77A"
+cyan <- "#5AC8F9"
+
+annRow <- gene_group # 行基因注释
+rownames(annRow) <- annRow$SYMBOL
+annColors <- list("Function" = c("Positive" = green,
+                                 "Negative" = yellow))
+# cox
+pheatmap(survland.coxplot,
+         border_color = "grey50",
+         show_rownames = T, # 显示行名
+         show_colnames = T, # 显示列明
+         cluster_rows = F, # 行不聚类
+         cluster_cols = T, # 列不聚类
+         color = c(blue,"grey95",red),
+         annotation_row = annRow[,"Group",drop = F],
+         annotation_colors = annColors,
+         legend_breaks = c(-1,0,1), # 修改图例的显示位置
+         legend_labels = c("Protective","p>0.05","Risky"), # 修改图例标签
+         #cellwidth = 10, # 单元格宽度
+         #cellheight = 16, # 单元格高度
+         filename = "figures/mygene_survival_cox.pdf", # 保存文件
+         width = 8, # 图片宽度
+         height = 8) # 图片高度
+
+# logrank
+pheatmap(survland.logrankplot,
+         border_color = "grey50",
+         show_rownames = T, # 显示行名
+         show_colnames = T, # 显示列明
+         cluster_rows = F, # 行不聚类
+         cluster_cols = T, # 列不聚类
+         color = c(blue,"grey95",red),
+         annotation_row = annRow[,"Group",drop = F],
+         annotation_colors = annColors,
+         legend_breaks = c(-1,0,1), # 修改图例的显示位置
+         legend_labels = c("Protective","p>0.05","Risky"), # 修改图例标签
+         #cellwidth = 10, # 单元格宽度
+         #cellheight = 16, # 单元格高度
+         filename = "figures/mygene_survival_logrank.pdf", # 保存文件
+         width = 8, # 图片宽度
+         height = 8) # 图片高度
+```
+
+
+# GZMscores
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(data.table)
+library(GSVA)
+library(ggplot2)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件
+## 下载TCGA pan-cancer数据
+GSVA的输入数据可以是microarray data，也可以是RNA-seq count、CPM、RPKM、TPM。
+- 表达矩阵和Gene mapping：
+  - 这里跟FigureYa55panCancer_violin保持一致，从[XENA](https://xenabrowser.net/datapages/)下载UCSC Toil RNA-seq Recompute TPM：[TCGA Pan-Cancer (PANCAN) (41 datasets)
+](https://xenabrowser.net/datapages/?cohort=TCGA%20Pan-Cancer%20(PANCAN)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443)里的[TOIL RSEM tpm (n=10,535) UCSC Toil RNA-seq Recompute](https://toil.xenahubs.net/download/tcga_rsem_isoform_tpm.gz)，[Gene Mapping](https://toil.xenahubs.net/download/probeMap/gencode.v23.annotation.transcript.probemap)
+  - 或者下载GDC pipeline的FPKM-UQ：[GDC Pan-Cancer (PANCAN) (17 datasets)](https://xenabrowser.net/datapages/?cohort=GDC%20Pan-Cancer%20(PANCAN)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443) 里的[HTSeq - FPKM-UQ (n=11,768) GDC Hub](https://gdc.xenahubs.net/download/GDC-PANCAN.htseq_fpkm-uq.tsv.gz)，[Gene Mapping](https://gdc.xenahubs.net/download/gencode.v22.annotation.gene.probeMap)
+- TCGA_phenotype_denseDataOnlyDownload.tsv，样本注释。[TCGA Pan-Cancer (PANCAN) (41 datasets) phenotype](https://xenabrowser.net/datapages/?cohort=TCGA%20Pan-Cancer%20(PANCAN)&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443)里的[sample type and primary disease (n=12,804) Pan-Cancer Atlas Hub](https://pancanatlas.xenahubs.net/download/TCGA_phenotype_denseDataOnlyDownload.tsv.gz)，只有癌症全称，没有缩写。
+- samplepair.txt，癌症缩写跟全称的对应关系
+```{r}
+load(file = "easyinput/pancancer_expr_tpm.Rdata")
+load(file = "easyinput/pancancer_annopb.Rdata")
+# 读取样本注释
+tcgacase <- read.delim(file="rawdata/TCGA_phenotype_denseDataOnlyDownload.tsv",header = T,row.names = NULL,check.names = F,stringsAsFactors = F,sep = "\t")
+tcgacase[1:2,]
+
+# 读取疾病缩写和全称
+samplepair <- read.delim("rawdata/samplepair.txt",as.is = T)
+tissueinfo <- samplepair[,1:2]
+tissueinfo[1:2,]
+# 把疾病缩写加到样本注释里
+colnames(tcgacase)[4] <- "Detail"
+tcgacase <- merge(tcgacase, tissueinfo, by = "Detail", all.x = T)
+rownames(tcgacase) <- tcgacase$sample
+
+# 取出原位癌以及癌旁样本
+tcgacase <- tcgacase[which(tcgacase$sample_type_id %in% c(1,11)),]
+
+# 取出例文图中的癌症sample
+tumors <- c("KIRC","THCA","BRCA","STAD","CHOL","LUAD","HNSC","LIHC","KIRP","READ","PRAD","LUSC","GBM","ESCA","BLCA","PAAD","UCEC","COAD","KICH","CESC")
+tcgacase <- tcgacase[which(tcgacase$TCGA %in% tumors),]
+
+# 提取既有表达数据又有样本注释信息的sample
+comsam <- intersect(colnames(panexpr),rownames(tcgacase)) 
+tcgacase <- tcgacase[comsam,] # TCGA的sample
+
+# 提取pancancer表达矩阵
+panexpr <- panexpr[,comsam]
+# 输出到文件，可用于后续更多分析
+save(panexpr, file = "easyinput/pancancer_expr_clin.Rdata")
+
+# 用ssgsea计算
+pos.comp <- read.table("easyinput/easy_input_pos.txt", header = T)$SYMBOL
+pos.comp <- intersect(pos.comp,rownames(panexpr))
+neg.comp <- read.table("easyinput/easy_input_neg.txt", header = T)$SYMBOL
+neg.comp <- intersect(neg.comp,rownames(panexpr))
+fpi.sig <- list(pos.comp = pos.comp,
+                neg.comp = neg.comp)
+
+panexpr <- 2^panexpr - 0.001 # 原始数据为log2(x+0.001)
+panexpr[panexpr < 0] <- 0 # 小于0的值拉到0
+panexpr <- log2(panexpr + 1) # 重新对数化
+panexpr <- panexpr[rowSums(panexpr) > 0,] # 去除全0值
+panexpr <- panexpr[apply(panexpr, 1, sd) > 0,] 
+panexpr[1:10,1:10]
+
+#写个循环批量计算出所有癌症的enrichment score
+ssgsea.list <- list() # 初始化结果列表
+for (t in tumors) {
+  message("--analysis of ",t," starts...")
+  tumsam <- rownames(tcgacase[which(tcgacase$TCGA == t & tcgacase$sample_type == "Primary Tumor"),])
+  norsam <- rownames(tcgacase[which(tcgacase$TCGA == t & tcgacase$sample_type == "Solid Tissue Normal"),])
+  
+  # 每次计算一个癌症类型的enrichment score
+  # 提取当前癌症的表达矩阵
+  expr <- panexpr[,c(tumsam,norsam)]
+
+  # 重新对表达谱对数化
+  ## 以下步骤请根据自己表达谱的情况来
+  # expr <- 2^expr - 0.001 # 原始数据为log2(x+0.001)
+  # expr[expr < 0] <- 0 # 小于0的值拉到0
+  # expr <- log2(expr + 1) # 重新对数化
+  # expr <- expr[rowSums(expr) > 0,] # 去除全0值
+  # expr <- expr[apply(expr, 1, sd) > 0,] # 去除平坦值
+  # expr <- t(scale(t(expr)))
+  
+  # 把处理好的每种癌症的表达矩阵保存到文件，可用于后续更多分析
+  #write.csv(expr, paste0("normalized_expr_", t, ".csv"), quote = F)
+  
+  es <- gsva(expr = as.matrix(expr),
+            gset.idx.list = fpi.sig,
+            method = "ssgsea",
+            ssgsea.norm = TRUE)
+ 
+  ssgsea.list[[t]] <- es
+  gc() # 释放内存
+}
+
+# 查看ssgsea.list里的结构
+ssgsea.list$KIRC[,1:4]
+# 可以看出，每种癌症有两行：pos.comp和neg.comp，接下来，用这两行相减，获得每个sample的PFI
+
+# 计算FPI
+fpi.res <- NULL
+dirct <- c()
+for (t in tumors) {
+  tumsam <- rownames(tcgacase[which(tcgacase$TCGA == t & tcgacase$sample_type == "Primary Tumor"),])
+  norsam <- rownames(tcgacase[which(tcgacase$TCGA == t & tcgacase$sample_type == "Solid Tissue Normal"),])
+  
+  es <- ssgsea.list[[t]]
+  fpi <- scale(as.numeric(es[1,] + es[2,]))[,1] # 计算FPI并标准化
+  names(fpi) <- c(tumsam, norsam)
+  med.fpi.tum <- median(fpi[tumsam]) # 计算中位数
+  med.fpi.nor <- median(fpi[norsam]) # 计算中位数
+  wt <- wilcox.test(fpi[tumsam],fpi[norsam]) # 秩和检验
+  
+  # 若肿瘤FPI大于癌旁，则标签为黄色
+  dirct <- c(dirct, ifelse(med.fpi.tum > med.fpi.nor, "yellow", "green")) 
+  
+  fpi.res <- rbind.data.frame(fpi.res,
+                              data.frame(sampleID = names(fpi),
+                                         fpi = as.numeric(fpi),
+                                         tissue = rep(c("Tumor","Normal"), c(length(tumsam),length(norsam))),
+                                         p = wt$p.value,
+                                         p.lab = ifelse(wt$p.value < 0.001,formatC(wt$p.value,format = "e",digits = 1), round(wt$p.value, 3)),
+                                         TCGA = t,
+                                         stringsAsFactors = F),
+                              stringsAsFactors = F)
+}
+names(dirct) <- tumors
+
+dirct <- sort(dirct) # 根据标签的颜色排序
+fpi.res$TCGA <- factor(fpi.res$TCGA, levels = names(dirct)) # 设置因子
+head(fpi.res)
+# 输出到文件
+write.csv(fpi.res, "output/output_GZMscores.csv", quote = F, row.names = F)
+
+# 定义颜色
+green <- "#2E8049"
+yellow <- "#DD8606"
+
+p <- ggplot(fpi.res, aes(TCGA, fpi, fill=tissue)) + 
+  geom_boxplot(outlier.shape = NA) + 
+  geom_text(aes(TCGA, y = 4,
+                label = paste0("P = ", p.lab)),
+            data = fpi.res,
+            inherit.aes = F) +
+  scale_fill_manual(values = c(green, yellow)) + 
+  scale_y_continuous(breaks = c(-2.5,0,2.5,5), labels = c(-2.5,0,2.5,5), limits = c(-3,5)) + 
+  xlab(NULL) + ylab("FPI") + coord_flip() +
+  theme_classic() +
+  
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5,vjust = 0.5,size = 11, colour = "black"),
+        axis.text.y = element_text(colour = ifelse(as.character(dirct) == "yellow", yellow, green), size = 10), # 若肿瘤FPI大于癌旁，则y轴标签为黄色，否则为绿色
+        legend.position = "bottom",
+        legend.title = element_blank()) 
+p
+ggsave("figures/pancancer_GZMscores.pdf", width = 5, height = 6)
+```
+
+
+# panGSEA
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(clusterProfiler)
+library(limma)
+library(ggplot2)
+library(data.table)
+library(ggpubr)
+library(GSVA)
+source("scripts/twoclasslimma.R")
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件
+easyinput_sample_annotation.txt，样本分组信息。整理自注释文件merged_sample_quality_annotations.tsv，下载自<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
+EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv，表达矩阵，第一列是基因，之后是其在每个样本中的表达量。下载自<http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>。
+```{r}
+# 注释肿瘤预处理
+rawAnno <- read.delim("rawdata/merged_sample_quality_annotations.tsv",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T) 
+rawAnno$simple_barcode <- substr(rawAnno$aliquot_barcode,1,15)
+samAnno <- rawAnno[!duplicated(rawAnno$simple_barcode),c("cancer type", "simple_barcode")]
+samAnno <- samAnno[which(samAnno$`cancer type` != ""),]
+# 输出样本分组信息
+save(samAnno,file = "easyinput/easyinput_samAnno.Rdata")
+
+# 快速读取表达谱数据并做数据预处理
+expr <- fread("rawdata/EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv",sep = "\t",stringsAsFactors = F,check.names = F,header = T) # 数据来自http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611
+expr <- as.data.frame(expr); rownames(expr) <- expr[,1]; expr <- expr[,-1]
+gene <- sapply(strsplit(rownames(expr),"|",fixed = T), "[",1)
+expr$gene <- gene
+expr <- expr[!duplicated(expr$gene),]
+rownames(expr) <- expr$gene; expr <- expr[,-ncol(expr)]
+expr[expr < 0] <- 0 # 对于这份泛癌数据，将略小于0的数值拉到0，否则不能取log（其他途径下载的泛癌数据可能不需要此操作）
+colnames(expr) <- substr(colnames(expr),1,15)
+gc()
+save(expr,samAnno,file = "easyinput/pancancer_EBPlusPlusAdjustexpr_GSEAinput.Rdata")
+
+# 读取感兴趣的基因
+genelist <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
+genelist <- intersect(genelist,rownames(expr))
+
+# 利用GSVA计算感兴趣基因集的富集得分，作为FPI
+es <- gsva(expr = as.matrix(log2(expr + 1)),
+           gset.idx.list = list("genelist" = genelist),
+           method = "ssgsea",
+           parallel.sz = 0) # 若采用LINUX或者MacOS可以设置为0，Windows请设置为1
+write.table(es, file = "output/pancancer_ssgsea_mygene.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+```
+
+## 差异分析及富集分析
+h.all.v2023.1.Hs.symbols.gmt，这里使用的是HALLMARK背景集，可以改为自己感兴趣的基因集合，从MSigDB<https://www.gsea-msigdb.org/gsea/msigdb/>下载。
+```{r}
+# 如果用某一个基因的表达量分组，直接运行下面这行即可
+#es <- log2(expr[rownames(expr) == "TP53",] + 1) # 以TP53为例
+# 这里用上述基因集的富集得分分组
+es <- read.table("output/pancancer_ssgsea_mygene.txt", sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+
+# 加载富集分析背景geneset
+msigdb.hallmark <- read.gmt("rawdata/h.all.v2023.1.Hs.symbols.gmt") 
+
+# 30%阈值来定义高低组（原文所述）
+pct <- 0.3
+
+gseaTab <- NULL
+
+# 接下来批量做这些肿瘤中FPI高低的差异分析及GSEA富集分析
+tumors <- c("BLCA","BRCA","CESC","CHOL","COAD",
+            "ESCA","GBM","HNSC","KICH","KIRC",
+            "KIRP","LIHC","LUAD","LUSC","PAAD",
+            "PRAD","READ","STAD","THCA","UCEC") #注意：这里包含正常和肿瘤样本
+for (i in tumors) {
+  message("--",i,"...")
+  sam <- samAnno[which(samAnno$`cancer type` == i),"simple_barcode"]
+  comsam <- intersect(colnames(es), sam) # 得到特定肿瘤类型中基因集的富集得分（或某一基因的表达量）
+  
+  tumsam <- comsam[substr(comsam,14,14) == "0"] # 仅提取肿瘤样本
+  # tumsam <- comsam # 对于非TCGA数据，可将上面一行替换为这行
+  es_subset <- as.data.frame(t(es[,tumsam]))
+  es_subset <- es_subset[order(es_subset$genelist,decreasing = T),,drop = F] # 对富集得分（或基因表达量）排序
+  
+  high.es <- rownames(es_subset[1:(nrow(es_subset) * pct),,drop = F]) # 取前30%为高组
+  low.es <- rownames(es_subset[nrow(es_subset):(nrow(es_subset) - nrow(es_subset) * pct + 1),,drop = F]) # 取后30%为低组
+  
+  # 高低两组样本的limma差异表达分析
+  subt <- data.frame(condition = rep(c("high","low"),c(length(high.es),length(low.es))),
+                     row.names = c(high.es, low.es),
+                     stringsAsFactors = F)
+  gset <- log2(na.omit(expr[,rownames(subt)]) + 1)
+  twoclasslimma(subtype  = subt, # 亚型信息（必须包含一列为condition）
+                featmat  = gset, # 表达谱（会自动检测数据标准化与否）
+                treatVar = "high", # “治疗组”的名字
+                ctrlVar  = "low", # “对照组”的名字
+                prefix   = paste0("output/TCGA_enrichment_score_",i), # 差异表达文件的前缀
+                overwt   = T, # 决定是否覆盖已经存在的差异表达结果
+                sort.p   = F, # 决定是否对结果按照FDR排序
+                verbose  = TRUE, # 决定是否显示一些提示
+                res.path = ".") # 确定结果路径
+  
+  # 加载差异表达分析结果
+  res <- read.table(paste0("output/TCGA_enrichment_score_",i,"_limma_test_result.high_vs_low.txt"),sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+  
+  # 产生pre-ranked基因列表
+  res <- res[order(res$log2fc, decreasing = T),]
+  glist <- res$log2fc; names(glist) <- rownames(res)
+  
+  # 运行GSEA富集分析
+  set.seed(20211114)
+  gsea <- GSEA(geneList = glist,
+               pvalueCutoff = 1, # 得到所有结果
+               seed = TRUE,
+               TERM2GENE = msigdb.hallmark)
+  gc()
+  gsea.df <- as.data.frame(gsea) # 数据转换为数据框
+  write.table(gsea.df,file = "output/gsea between high and low group of enrichment score in pancancer.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+  
+  gseaTab <- rbind.data.frame(gseaTab,
+                              data.frame(term = gsea.df$ID,
+                                         NES = gsea.df$NES,
+                                         FDR = gsea.df$p.adjust,
+                                         tumor = i,
+                                         stringsAsFactors = F),
+                              stringsAsFactors = F)
+}
+
+# 将所有肿瘤的富集分析结果输出到文件
+write.table(gseaTab, "output/TCGA_pancan_gsea_regarding_es_group.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+
+
+# 开始画图
+# 设置颜色
+darkblue <- "#303B7F"
+darkred <- "#D51113"
+yellow <- "#EECA1F"
+
+# 生成泡泡图
+tmp <- gseaTab
+tmp$term <- gsub("HALLMARK_","",tmp$term)
+my_palette <- colorRampPalette(c(darkblue,yellow,darkred), alpha=TRUE)(n=128)
+ggplot(tmp, aes(x=tumor,y=term)) +
+  geom_point(aes(size=-log10(FDR),color=NES)) +
+  scale_color_gradientn('NES', 
+                        colors=my_palette) + 
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        axis.text.x = element_text(angle = 45, size = 12, hjust = 0.3, vjust = 0.5, color = "black"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title = element_blank(),
+        panel.border = element_rect(size = 0.7, linetype = "solid", colour = "black"),
+        legend.position = "bottom",
+        plot.margin = unit(c(1,1,1,1), "lines"))
+ggsave("figures/pancancer_GSEA_GZMscores.pdf", width = 12,height = 10)
+```
+
+
+# panGeneGSEA
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(clusterProfiler)
+library(limma)
+library(ggplot2)
+library(data.table)
+library(ggpubr)
+library(SimDesign)
+source("scripts/twoclasslimma.R")
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件
+merged_sample_quality_annotations.tsv，样本分组信息。下载自<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
+EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv，表达矩阵，第一列是基因，之后是其在每个样本中的表达量。下载自<http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>。
+```{r}
+# 设置颜色
+darkblue <- "#303B7F"
+darkred <- "#D51113"
+yellow <- "#EECA1F"
+
+# 获取感兴趣的肿瘤类型（有正常和肿瘤样本）
+tumors <- c("BLCA","BRCA","CESC","CHOL","COAD",
+            "ESCA","GBM","HNSC","KICH","KIRC",
+            "KIRP","LIHC","LUAD","LUSC","PAAD",
+            "PRAD","READ","STAD","THCA","UCEC")
+
+# 从原文中获取感兴趣的基因集 (TTC35/EMC2) 
+genelist <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
+
+# 注释肿瘤预处理
+load(file = "easyinput/pancancer_EBPlusPlusAdjustexpr_GSEAinput.Rdata")
+
+# 运行GSEA
+msigdb.hallmark <- read.gmt("rawdata/h.all.v7.5.1.symbols.gmt") # 可以改为自己感兴趣的基因集合
+pct <- 0.3 # 30%阈值来定义高低组
+gseaTab <- NULL
+for (i in tumors) {
+  message("--",i,"...")
+  sam <- samAnno[which(samAnno$`cancer type` == i),"simple_barcode"]
+  comsam <- intersect(colnames(expr), sam) # 得到特定肿瘤类型的表达谱
+  tumsam <- comsam[substr(comsam,14,14) == "0"] # 仅提取肿瘤样本
+  es <- expr[genelist,tumsam] # 取出感兴趣基因和当前肿瘤样本的表达谱子集
+  
+  for (j in genelist) {
+    message("gene of ", j, " starts...")
+    es_subset <- as.data.frame(t(es[j,tumsam]))
+    es_subset <- es_subset[order(es_subset[,1],decreasing = T),,drop = F] # 对表达值排序
+    
+    high.es <- rownames(es_subset[1:(nrow(es_subset) * pct),,drop = F]) # 取前30%为高组
+    low.es <- rownames(es_subset[nrow(es_subset):(nrow(es_subset) - nrow(es_subset) * pct + 1),,drop = F]) # 取后30%为低组
+    
+    # 采用两样本limma差异表达分析
+    subt <- data.frame(condition = rep(c("high","low"),c(length(high.es),length(low.es))),
+                       row.names = c(high.es, low.es),
+                       stringsAsFactors = F)
+    gset <- log2(na.omit(expr[,rownames(subt)]) + 1)
+    twoclasslimma(subtype  = subt, # 亚型信息（必须包含一列为condition）
+                  featmat  = gset, # 表达谱（会自动检测数据标准化与否）
+                  treatVar = "high", # “治疗组”的名字
+                  ctrlVar  = "low", # “对照组”的名字
+                  prefix   = paste0("output/TCGA_",i,"_",j), # 差异表达文件的前缀
+                  overwt   = T, # 决定是否覆盖已经存在的差异表达结果
+                  sort.p   = F, # 决定是否对结果按照FDR排序
+                  verbose  = TRUE, # 决定是否显示一些提示
+                  res.path = ".") # 确定结果路径
+    
+    # 加载差异表达结果
+    res <- read.table(file.path(paste0("output/TCGA_",i,"_",j,"_limma_test_result.high_vs_low.txt")),sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+    
+    # 产生pre-ranked基因列表
+    res <- res[order(res$log2fc, decreasing = T),]
+    glist <- res$log2fc; names(glist) <- rownames(res)
+    
+    # 运行GSEA
+    set.seed(20220407)
+    gsea <- quiet(GSEA(geneList = glist,
+                 pvalueCutoff = 1, # 得到所有结果
+                 seed = TRUE,
+                 TERM2GENE = msigdb.hallmark,
+                 verbose = TRUE))
+    gc()
+    gsea.df <- as.data.frame(gsea) # 数据转换为数据框
+    write.table(gsea.df,file = file.path(paste0("output/gsea between high and low group of gene ",j," in ",i,".txt")),sep = "\t",row.names = T,col.names = NA,quote = F)
+    
+    gseaTab <- rbind.data.frame(gseaTab,
+                                data.frame(tumor = i,
+                                           gene = j,
+                                           term = gsea.df$ID,
+                                           NES = gsea.df$NES,
+                                           pval = gsea.df$pvalue,
+                                           FDR = gsea.df$p.adjust,
+                                           stringsAsFactors = F),
+                                stringsAsFactors = F)
+  }
+}
+write.table(gseaTab, "output/TCGA_pancan_gsea_regarding_genes_of_interest.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+
+# 开始画图
+pathOfInterest <- "HALLMARK_ALLOGRAFT_REJECTION" # 设置感兴趣的通路
+tmp <- gseaTab[which(gseaTab$term == pathOfInterest),] # 提取和该通路有关的NES
+my_palette <- colorRampPalette(c(darkblue,yellow,darkred), alpha=TRUE)(n=128)
+ggplot(tmp, aes(x=tumor,y=gene)) +
+  geom_point(aes(size=-log10(FDR),color=NES)) +
+  scale_color_gradientn('NES', 
+                        colors=my_palette) + 
+  scale_size_continuous(range = c(1,4)) + #圆点的大小范围
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(), 
+        panel.grid.major = element_blank(),
+        axis.text.x = element_text(angle = 45, size = 12, hjust = 0.3, vjust = 0.5, color = "black"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title = element_blank(),
+        panel.border = element_rect(size = 0.7, linetype = "solid", colour = "black"),
+        legend.position = "bottom",
+        plot.margin = unit(c(1,1,1,1), "lines"))
+ggsave(paste0("figures/pancancer_GSEA_",pathOfInterest,".pdf"), width = 8,height = 6)
+```
+
+
+# PancanProgSigature
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(ggplot2)
+library(data.table)
+library(survival)
+library(cowplot)
+library(ggpubr)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件
+merged_sample_quality_annotations.tsv，肿瘤注释文件。下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas>，下载地址<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
+EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv，表达矩阵，第一列是基因，之后是其在每个样本中的表达量。下载自<http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>。跟FigureYa286ExprCorORR所用的是同一个文件，不用重复下载。
+Survival_SupplementalTable_S1_20171025_xena_sp，生存数据。来自<https://xenabrowser.net/datapages/?dataset=Survival_SupplementalTable_S1_20171025_xena_sp&host=https%3A%2F%2Fpancanatlas.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443>
+```{r}
+# 读取风险基因以及对应系数
+risk.coeff <- read.table("easyinput/easyinput_mygene_riskscore.txt",sep = "\t", row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
+
+load(file = "easyinput/pancancer_EBPlusPlusAdjustexpr_GSEAinput.Rdata")
+
+# 去掉对于风险基因存在NA值的样本
+expr.sub <- expr[risk.coeff$Gene, ] # 提取仅有风险相关基因的表达谱子集
+expr.sub <- as.data.frame(t(na.omit(t(expr.sub)))) # 对列做去空值，而非对行做
+keepSam <- colnames(expr.sub) # 提取被保留的样本
+expr <- expr[,keepSam] # 重构表达谱
+
+# 读取生存数据
+surv <- read.delim("rawdata/Survival_SupplementalTable_S1_20171025_xena_sp", sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T) 
+
+# 确定肿瘤样本以及对应肿瘤类型
+sam <- samAnno[which(samAnno$`cancer type` != "LAML"),"simple_barcode"] # 去掉白血病样本
+comsam <- intersect(intersect(colnames(expr), sam), rownames(surv)) # 得到与表达谱以及生存的共有样本
+tumsam <- comsam[substr(comsam,14,14) == "0"] # 仅提取肿瘤样本
+tumAnno <- samAnno[which(samAnno$simple_barcode %in% tumsam),] # 获取这些肿瘤样本的注释信息
+tumAnno <- tumAnno[order(tumAnno$`cancer type`),] # 根据肿瘤类型排序
+tumors <- unique(tumAnno$`cancer type`) # 得到32个肿瘤
+
+
+# 样本分层
+trainsam <- testsam <- list()
+outTab <- NULL
+for (i in tumors) {
+  sam <- tumAnno[which(tumAnno$`cancer type` == i),"simple_barcode"] # 提取当前肿瘤类型下的肿瘤样本
+  set.seed(20000112) # 设置一个种子使得抽样可重复
+  trainsam[[i]] <- sample(sam, size = 0.7 * length(sam)) # 根据原文提取70%的样本作为训练集
+  testsam[[i]] <- setdiff(sam, trainsam[[i]]) # 剩下的样本作为测试集
+  outTab <- rbind.data.frame(outTab, # 保存抽样结果
+                             data.frame(tumor = i, # 肿瘤类型
+                                        size = length(sam), # 肿瘤样本量
+                                        n.train = length(trainsam[[i]]), # 训练集样本量
+                                        n.test = length(testsam[[i]]), # 测试集样本量
+                                        trainID = paste(trainsam[[i]], collapse = " | "), # 训练集样本名集合
+                                        testID = paste(testsam[[i]], collapse = " | "), # 测试集样本名集合
+                                        stringsAsFactors = F),
+                             stringsAsFactors = F)
+}
+
+write.table(outTab, file = "output/tumor sample stratification across 32 tumor types.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+
+nets.score <- list() # 初始化列表
+nets.mean <- c() # 初始化得分均值向量
+outTab <- NULL
+for (i in tumors) {
+  sam <- trainsam[[i]] # 提取当前肿瘤类型的肿瘤样本
+  expr.sub <- log2(expr[risk.coeff$Gene,sam] + 1) # 提取表达谱子集并对数化
+  nets <- apply(expr.sub,2,function(x) {x %*% risk.coeff$Coefficient}) 
+  nets.score[[i]] <- nets
+  nets.mean <- c(nets.mean, mean(nets))
+  outTab <- rbind.data.frame(outTab, # 保存得分的计算结果
+                             data.frame(tumor = i, # 肿瘤类型
+                                        class = "train", # 当前为训练集
+                                        samID = sam, # 当前样本
+                                        NETs = as.numeric(nets), # 当前得分
+                                        stringsAsFactors = F),
+                             stringsAsFactors = F)
+}
+sapply(nets.score, range) # 不存在空值
+
+write.table(outTab, file = "output/nets score of traning tumor sample across 32 tumor types.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+names(nets.mean) <- tumors
+nets.mean <- sort(nets.mean, decreasing = T) # 根据均值对肿瘤进行排序
+tumor.level <- names(nets.mean) # 将排序结果作为肿瘤因子的等级
+
+
+outTab <- NULL
+for(i in tumors) {
+  nets <- data.frame(nets = nets.score[[i]],
+                     row.names = trainsam[[i]],
+                     group = ifelse(nets.score[[i]] > median(nets.score[[i]]),"High","Low"), # 根据中位数确定高低风险组
+                     stringsAsFactors = F)
+  nets <- cbind.data.frame(nets, surv[rownames(nets),c("OS","OS.time","DSS","DSS.time","PFI","PFI.time")])
+
+  ## OS
+  coxres <- summary(coxph(Surv(OS.time, OS) ~ group, data = nets))
+  outTab <- rbind.data.frame(outTab,
+                             data.frame(tumor = i, # 当前肿瘤类型
+                                        event = "OS", # 当前结局类型
+                                        beta = coxres$coefficients[1,1], # 回归系数
+                                        hr = coxres$coefficients[1,2], # Hazard ratio
+                                        lower = coxres$conf.int[1,3], # 置信区间下限
+                                        upper = coxres$conf.int[1,4], # 置信区间上限
+                                        p = coxres$coefficients[1,5], # p值
+                                        stringsAsFactors = F),
+                             stringsAsFactors = F)
+  
+  ## DSS
+  coxres <- summary(coxph(Surv(DSS.time, DSS) ~ group, data = nets))
+  outTab <- rbind.data.frame(outTab,
+                             data.frame(tumor = i,
+                                        event = "DSS",
+                                        beta = coxres$coefficients[1,1],
+                                        hr = coxres$coefficients[1,2],
+                                        lower = coxres$conf.int[1,3], # 置信区间下限
+                                        upper = coxres$conf.int[1,4], # 置信区间上限
+                                        p = coxres$coefficients[1,5],
+                                        stringsAsFactors = F),
+                             stringsAsFactors = F)
+  
+  ## PFI
+  coxres <- summary(coxph(Surv(PFI.time, PFI) ~ group, data = nets))
+  outTab <- rbind.data.frame(outTab,
+                             data.frame(tumor = i,
+                                        event = "PFI",
+                                        beta = coxres$coefficients[1,1],
+                                        hr = coxres$coefficients[1,2],
+                                        lower = coxres$conf.int[1,3], # 置信区间下限
+                                        upper = coxres$conf.int[1,4], # 置信区间上限
+                                        p = coxres$coefficients[1,5],
+                                        stringsAsFactors = F),
+                             stringsAsFactors = F)
+}
+outTab[which(outTab$tumor == "TGCT"),]
+# tumor event       beta      hr     lower     upper         p
+# 79  TGCT    OS         NA      NA 0.0000000        NA        NA
+# 80  TGCT   DSS         NA      NA 0.0000000        NA        NA
+# 81  TGCT   PFI 0.06247737 1.06447 0.3932578 0.8737703 0.8737703
+# 由于TGCT无患者达到全局死亡或疾病特异性死亡结局，调整对应OS和DSS的数值
+outTab[79,c(3,4,5,6,7)] <- c(0,1,1,1,1) # 系数调为0，HR及区间都改为1，P值改为1，表明无意义
+outTab[80,c(3,4,5,6,7)] <- c(0,1,1,1,1) # 系数调为0，HR及区间都改为1，P值改为1，表明无意义
+
+write.table(outTab, file = "output/prognostic summary of binary nets score of traning tumor sample across 32 tumor types.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+
+
+# 开始画图
+# 设置颜色
+mycol <- c("#A6CEE3","#1F78B4","#B2DF8A","#33A02C","#FB9A99","#E31A1C","#FDBF6F","#FF7F00","#CAB2D6","#6A3D9A","#B15928","#8DD3C7","#BEBADA","#FB8072","#80B1D3","#FDB462","#B3DE69","#FCCDE5","#D9D9D9","#BC80BD","#CCEBC5","#FFED6F","#8C510A","#BF812D","#DFC27D","#F6E8C3","#80CDC1","#35978F","#01665E","#003C30","#8E0152","#C51B7D")
+
+# 顶部图形
+topdf <- read.table("output/nets score of traning tumor sample across 32 tumor types.txt",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
+topdf$tumor <- factor(topdf$tumor, levels = tumor.level)
+topdf$NETs <- scale(topdf$NETs) # 对整体范围内的NETs得分进行标准化
+p.top <- ggplot(data = topdf,aes(x = tumor, y = NETs, fill = tumor))+ 
+  geom_hline(yintercept = 0, color="black", # 先添加0值水平线以免遮挡小提琴图
+             linetype="longdash", lwd = 0.6) +
+  geom_jitter(shape=16, position=position_jitter(0.2),aes(color=tumor), size = 0.2) + # 添加散点
+  geom_violin(aes(color=tumor), draw_quantiles = c(0.25, 0.5, 0.75), fill = NA, size = 0.6) + # 添加小提琴图并加上分位数结果
+  stat_summary(fun = "mean", # 添加均值点
+               geom = "point",
+               color = "black") +
+  scale_fill_manual(values = alpha(mycol, 0.8)) +   scale_color_manual(values = alpha(mycol, 0.8)) + 
+  ylab("GZMs score (Cox)--TCGA train") + xlab("") +
+  theme_bw() +
+  theme(axis.ticks = element_line(size = 0.2, color = "black"),
+        axis.ticks.length = unit(0.2, "cm"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_text(hjust = 1, vjust = 0.5, size = 10, color = "black", angle = 90),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.position = "none")
+p.top
+#ggsave(filename = "top.pdf", width = 8,height = 6)
+
+# 底部图形
+botdf <- read.table("output/prognostic summary of binary nets score of traning tumor sample across 32 tumor types.txt",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
+botdf$tumor <- factor(botdf$tumor, levels = tumor.level)
+botdf$dirct <- factor(ifelse(botdf$hr > 1,"Risky","Protective"), levels = c("Risky","Protective"))
+botdf$event <- factor(botdf$event, levels = c("PFI","OS","DSS"))
+p.bot <- ggplot(botdf,aes(x = tumor, y = event,size = -log10(p))) +
+  geom_point(shape = 21, aes(size=-log10(p), col = dirct, fill = tumor), position = position_dodge(0), stroke = 1) +
+  scale_fill_manual(values = mycol) +
+  scale_color_manual(values = c("black","grey80")) +
+  xlab(NULL) + ylab(NULL) +
+  labs(size = "-log10(P-value)", col = "HR") +
+  scale_size_continuous(range = c(2,6)) + 
+  guides(fill = FALSE) + 
+  theme_bw() + 
+  theme(axis.ticks = element_line(size = 0.2, color = "black"),
+        axis.ticks.length = unit(0.2, "cm"),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title = element_text(size = 12, color = "black"),
+        axis.line = element_line(colour = "black"),
+        axis.text.x = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.position = "bottom",
+        legend.margin=margin(t= 0, unit='cm'),
+        legend.spacing = unit(0.1,"in"))
+p.bot
+#ggsave(filename = "bottom.pdf", width = 8,height = 6)
+
+# 组合图形
+#p <- plot_grid(p.top, p.bot, nrow = 2, rel_heights = c(0.7,0.3)) # 不能对齐的样子
+p <- ggarrange(p.top,
+               p.bot, 
+               nrow = 2, ncol = 1,
+               align = "v",
+               heights = c(7,3),
+               common.legend = F)
+p
+
+ggsave(filename = "figures/pancancer_mygene_PancanProgSigature.pdf", width = 8,height = 6)
+```
+
+
+# pancanSurv
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(ggplot2)
+library(data.table)
+library(survival)
+library(ComplexHeatmap)
+library(forestplot)
+library(survminer)
+library(circlize)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件
+merged_sample_quality_annotations.tsv，肿瘤注释文件。下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas>，下载地址<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
+EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv，表达矩阵，第一列是基因，之后是其在每个样本中的表达量。下载自<http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>。
+Survival_SupplementalTable_S1_20171025_xena_sp，生存数据。来自<https://xenabrowser.net/datapages/?dataset=Survival_SupplementalTable_S1_20171025_xena_sp&host=https%3A%2F%2Fpancanatlas.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443>
+```{r}
+# 加载前期处理过的输入数据
+load(file = "easyinput/pancancer_EBPlusPlusAdjustexpr_GSEAinput.Rdata")
+# 读取生存数据
+surv <- read.delim("rawdata/Survival_SupplementalTable_S1_20171025_xena_sp", sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T) 
+
+# 设置感兴趣的基因
+geneOfInterest <- "GZMK"
+if(!is.element(geneOfInterest, rownames(expr))) {
+  warning("The gene ", geneOfInterest," cannot be found!")
+} else {
+  message("The gene ", geneOfInterest," can be matched!")
+}
+
+# 去掉对于感兴趣基因存在NA值的样本
+expr.sub <- expr[geneOfInterest, ] # 提取仅有该基因表达的表达谱子集
+expr.sub <- as.data.frame(t(na.omit(t(expr.sub)))) # 对列做去空值，而非对行做
+keepSam <- colnames(expr.sub) # 提取被保留的样本
+expr <- expr[geneOfInterest,keepSam] # 重构表达谱
+rm(expr.sub); gc()
+
+# 确定肿瘤样本以及对应肿瘤类型
+sam <- samAnno[which(samAnno$`cancer type` != "LAML"),"simple_barcode"] # 去掉白血病样本
+comsam <- intersect(intersect(colnames(expr), sam), rownames(surv)) # 得到与表达谱以及生存的共有样本
+tumsam <- comsam[substr(comsam,14,14) == "0"] # 仅提取肿瘤样本
+tumAnno <- samAnno[which(samAnno$simple_barcode %in% tumsam),] # 获取这些肿瘤样本的注释信息
+tumAnno <- tumAnno[order(tumAnno$`cancer type`),] # 根据肿瘤类型排序
+tumors <- unique(tumAnno$`cancer type`) # 得到32个肿瘤
+
+# 合并表达和生存数据
+exprSurv <- cbind.data.frame(expr = log2(as.numeric(expr[geneOfInterest,comsam]) + 1),
+                             surv[comsam,c("OS","OS.time","DSS","DSS.time","DFI","DFI.time","PFI","PFI.time")])
+write.table(exprSurv, "output/combined dataframe with both gene expression and survival information.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+
+outTab.cox <- NULL
+for(i in tumors) {
+  sam <- tumAnno[which(tumAnno$`cancer type` == i),"simple_barcode"]
+  exprSurvSub <- exprSurv[sam,]
+  
+  ## OS
+  coxres <- summary(coxph(Surv(OS.time, OS) ~ expr, data = exprSurvSub))
+  outTab.cox <- rbind.data.frame(outTab.cox,
+                                 data.frame(tumor = i, # 当前肿瘤类型
+                                            event = "OS", # 当前结局类型
+                                            beta = coxres$coefficients[1,1], # 回归系数
+                                            hr = coxres$coefficients[1,2], # Hazard ratio
+                                            lower = coxres$conf.int[1,3], # 置信区间下限
+                                            upper = coxres$conf.int[1,4], # 置信区间上限
+                                            p = coxres$coefficients[1,5], # p值
+                                            stringsAsFactors = F),
+                                 stringsAsFactors = F)
+  
+  ## DSS
+  coxres <- summary(coxph(Surv(DSS.time, DSS) ~ expr, data = exprSurvSub))
+  outTab.cox <- rbind.data.frame(outTab.cox,
+                                 data.frame(tumor = i,
+                                            event = "DSS",
+                                            beta = coxres$coefficients[1,1],
+                                            hr = coxres$coefficients[1,2],
+                                            lower = coxres$conf.int[1,3],
+                                            upper = coxres$conf.int[1,4],
+                                            p = coxres$coefficients[1,5],
+                                            stringsAsFactors = F),
+                                 stringsAsFactors = F)
+  
+  ## DFI
+  if(i %in% c("SKCM","THYM","UVM","GBM")) { # 前三个肿瘤没有对应的DFI数据，GBM只有3个样本有对应的DFI，也去除（和原文不符）
+    outTab.cox <- rbind.data.frame(outTab.cox,
+                                   data.frame(tumor = i,
+                                              event = "DFI",
+                                              beta = NA,
+                                              hr = NA,
+                                              lower = NA,
+                                              upper = NA,
+                                              p = NA,
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+  } else {
+    coxres <- summary(coxph(Surv(DFI.time, DFI) ~ expr, data = exprSurvSub))
+    outTab.cox <- rbind.data.frame(outTab.cox,
+                                   data.frame(tumor = i,
+                                              event = "DFI",
+                                              beta = coxres$coefficients[1,1],
+                                              hr = coxres$coefficients[1,2],
+                                              lower = coxres$conf.int[1,3],
+                                              upper = coxres$conf.int[1,4],
+                                              p = coxres$coefficients[1,5],
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+  }
+  
+  ## PFI
+  coxres <- summary(coxph(Surv(PFI.time, PFI) ~ expr, data = exprSurvSub))
+  outTab.cox <- rbind.data.frame(outTab.cox,
+                                 data.frame(tumor = i,
+                                            event = "PFI",
+                                            beta = coxres$coefficients[1,1],
+                                            hr = coxres$coefficients[1,2],
+                                            lower = coxres$conf.int[1,4],
+                                            upper = coxres$conf.int[1,4],
+                                            p = coxres$coefficients[1,5],
+                                            stringsAsFactors = F),
+                                 stringsAsFactors = F)
+}
+write.table(outTab.cox, file = "output/summary of cox result in pancancer_GZMK.txt",sep = "\r",row.names = F,col.names = T,quote = F)
+
+
+minprop <- 0.2
+outTab.km <- NULL
+for(i in tumors) {
+  sam <- tumAnno[which(tumAnno$`cancer type` == i),"simple_barcode"]
+  exprSurvSub <- exprSurv[sam,]
+  
+  ## OS
+  bestcut <- surv_cutpoint(exprSurvSub, 
+                           time = "OS.time", 
+                           event = "OS", 
+                           variables = "expr", 
+                           minprop = minprop) #默认组内sample不能低于20%
+  cutoff <- bestcut$cutpoint[1,1]
+  exprSurvSub$group <- factor(ifelse(exprSurvSub$expr > cutoff,"High","Low"), levels = c("Low","High"))
+  fitd <- survdiff(Surv(OS.time, OS) ~ group, data=exprSurvSub, na.action=na.exclude)
+  p.val <- 1 - pchisq(fitd$chisq, length(fitd$n) - 1)
+  HR <- (fitd$obs[2]/fitd$exp[2])/(fitd$obs[1]/fitd$exp[1])
+  outTab.km <- rbind.data.frame(outTab.km,
+                                data.frame(tumor = i, # 当前肿瘤类型
+                                           event = "OS", # 当前结局类型
+                                           hr = HR, # Hazard ratio
+                                           lower = exp(log(HR) - qnorm(0.975)*sqrt(1/fitd$exp[2]+1/fitd$exp[1])), # 置信区间下限
+                                           upper = exp(log(HR) + qnorm(0.975)*sqrt(1/fitd$exp[2]+1/fitd$exp[1])), # 置信区间上限
+                                           p = p.val, # p值
+                                           stringsAsFactors = F),
+                                stringsAsFactors = F)
+  
+  ## DSS
+  bestcut <- surv_cutpoint(exprSurvSub, 
+                           time = "DSS.time", 
+                           event = "DSS", 
+                           variables = "expr", 
+                           minprop = minprop) #默认组内sample不能低于20%
+  cutoff <- bestcut$cutpoint[1,1]
+  exprSurvSub$group <- factor(ifelse(exprSurvSub$expr > cutoff,"High","Low"), levels = c("High","Low"))
+  fitd <- survdiff(Surv(DSS.time, DSS) ~ group, data=exprSurvSub, na.action=na.exclude)
+  p.val <- 1 - pchisq(fitd$chisq, length(fitd$n) - 1)
+  outTab.km <- rbind.data.frame(outTab.km,
+                                data.frame(tumor = i, # 当前肿瘤类型
+                                           event = "DSS", # 当前结局类型
+                                           hr = (fitd$obs[2]/fitd$exp[2])/(fitd$obs[1]/fitd$exp[1]), # Hazard ratio
+                                           lower = exp(log(HR) - qnorm(0.975)*sqrt(1/fitd$exp[2]+1/fitd$exp[1])), # 置信区间下限
+                                           upper = exp(log(HR) + qnorm(0.975)*sqrt(1/fitd$exp[2]+1/fitd$exp[1])), # 置信区间上限
+                                           p = p.val, # p值
+                                           stringsAsFactors = F),
+                                stringsAsFactors = F)
+  
+  ## DFI
+  if(i %in% c("SKCM","THYM","UVM","GBM")) { # 前三个肿瘤没有对应的DFI数据，GBM只有3个样本有对应的DFI，也去除（和原文不符）
+    outTab.km <- rbind.data.frame(outTab.km,
+                                  data.frame(tumor = i,
+                                             event = "DFI",
+                                             hr = NA,
+                                             lower = NA,
+                                             upper = NA,
+                                             p = NA,
+                                             stringsAsFactors = F),
+                                  stringsAsFactors = F)
+  } else {
+    bestcut <- surv_cutpoint(exprSurvSub, 
+                             time = "DFI.time", 
+                             event = "DFI", 
+                             variables = "expr", 
+                             minprop = minprop) #默认组内sample不能低于20%
+    cutoff <- bestcut$cutpoint[1,1]
+    exprSurvSub$group <- factor(ifelse(exprSurvSub$expr > cutoff,"High","Low"), levels = c("High","Low"))
+    fitd <- survdiff(Surv(DFI.time, DFI) ~ group, data=exprSurvSub, na.action=na.exclude)
+    p.val <- 1 - pchisq(fitd$chisq, length(fitd$n) - 1)
+    outTab.km <- rbind.data.frame(outTab.km,
+                                  data.frame(tumor = i, # 当前肿瘤类型
+                                             event = "DFI", # 当前结局类型
+                                             hr = (fitd$obs[2]/fitd$exp[2])/(fitd$obs[1]/fitd$exp[1]), # Hazard ratio
+                                             lower = exp(log(HR) - qnorm(0.975)*sqrt(1/fitd$exp[2]+1/fitd$exp[1])), # 置信区间下限
+                                             upper = exp(log(HR) + qnorm(0.975)*sqrt(1/fitd$exp[2]+1/fitd$exp[1])), # 置信区间上限
+                                             p = p.val, # p值
+                                             stringsAsFactors = F),
+                                  stringsAsFactors = F)
+  }
+  
+  ## PFI
+  bestcut <- surv_cutpoint(exprSurvSub, 
+                           time = "PFI.time", 
+                           event = "PFI", 
+                           variables = "expr", 
+                           minprop = minprop) #默认组内sample不能低于20%
+  cutoff <- bestcut$cutpoint[1,1]
+  exprSurvSub$group <- factor(ifelse(exprSurvSub$expr > cutoff,"High","Low"), levels = c("High","Low"))
+  fitd <- survdiff(Surv(PFI.time, PFI) ~ group, data=exprSurvSub, na.action=na.exclude)
+  p.val <- 1 - pchisq(fitd$chisq, length(fitd$n) - 1)
+  outTab.km <- rbind.data.frame(outTab.km,
+                                data.frame(tumor = i, # 当前肿瘤类型
+                                           event = "PFI", # 当前结局类型
+                                           hr = (fitd$obs[2]/fitd$exp[2])/(fitd$obs[1]/fitd$exp[1]), # Hazard ratio
+                                           lower = exp(log(HR) - qnorm(0.975)*sqrt(1/fitd$exp[2]+1/fitd$exp[1])), # 置信区间下限
+                                           upper = exp(log(HR) + qnorm(0.975)*sqrt(1/fitd$exp[2]+1/fitd$exp[1])), # 置信区间上限
+                                           p = p.val, # p值
+                                           stringsAsFactors = F),
+                                stringsAsFactors = F)
+}
+write.table(outTab.km, file = "output/summary of km result in pancancer_GZMK.txt",sep = "\r",row.names = F,col.names = T,quote = F)
+
+
+# 开始画图
+## 绘制热图
+# 设置颜色
+blue   <- "#A0CEE3"
+yellow <- "#EFEFBE"
+sea    <- "#37BCDF"
+green  <- "#71BC5D"
+cherry <- "#E5588C"
+red    <- "#E46A6B"
+purple <- "#8959A3"
+
+# 制作热图绘制数据
+hmInput <- NULL
+for (i in tumors) {
+  
+  cox.res <- outTab.cox[which(outTab.cox$tumor == i),]
+  km.res <- outTab.km[which(outTab.km$tumor == i),]
+  
+  cox.res$dirct <- ifelse(cox.res$hr > 1 & cox.res$p < 0.05, "Risky",
+                          ifelse(cox.res$hr < 1 & cox.res$p < 0.05, "Protective","Nonsense"))
+  km.res$dirct <- ifelse(km.res$hr > 1 & km.res$p < 0.05, "Risky",
+                         ifelse(km.res$hr < 1 & km.res$p < 0.05, "Protective","Nonsense"))
+  hmInput <- rbind.data.frame(hmInput,
+                              data.frame(OS.cox = cox.res[1,"dirct"],
+                                         OS.km = km.res[1,"dirct"],
+                                         DSS.cox = cox.res[2,"dirct"],
+                                         DSS.km = km.res[2,"dirct"],
+                                         DFI.cox = cox.res[3,"dirct"],
+                                         DFI.km = km.res[3,"dirct"],
+                                         PFI.cox = cox.res[4,"dirct"],
+                                         PFI.km = km.res[4,"dirct"],
+                                         row.names = i,
+                                         stringsAsFactors = F),
+                              stringsAsFactors = F)
+}
+hmInput[is.na(hmInput)] <- "N/A"
+write.table(hmInput, file = "output/summary of gene prognositicationin pancancer_GZMK.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
+
+# 注意：结果在某些肿瘤上有较大出入，可能的原因有：
+# 1. 泛癌表达谱使用不一致
+# 2. 最佳生存曲线cutoff的minprop选择不一致
+# 3. 对KM分析中HR的计算不一致，原作者可能依然采用Cox回归估计二分类下的HR
+
+# 修改热图数据
+indata <- hmInput
+indata[indata == "Risky"] <- 0 # 为了使得risky出现在图例的顶部，所以设置一个最小值0
+indata[indata == "Protective"] <- 1 # 根据原文，依次设置为1
+indata[indata == "N/A"] <- 2 # 根据原文，依次设置为2
+indata[indata == "Nonsense"] <- 3 # 根据原文，依次设置为3
+
+# 构建列注释
+annCol <- data.frame("Method" = rep(c("Cox","Log-rank"),4),
+                     "Survival Type" = rep(c("OS","DSS","DFI","PFI"), each = 2),
+                     check.names = F, # 避免出现Survival.Type
+                     row.names = colnames(indata))
+annColors <- list("Method" = c("Cox" = blue, "Log-rank" = yellow),
+                  "Survival Type" = c("OS" = sea, "DSS" = green, "DFI" = cherry, "PFI" = purple))
+col_fun = circlize::colorRamp2(c(0, 1, 2, 3), c(red,green,"grey50","white")) # 设置0123对应的颜色
+
+# 绘制热图
+hm <- Heatmap(matrix = as.matrix(indata),
+              border = "black", # 热图外边框
+              rect_gp = gpar(col = "black"), # 热图每个单元格边框
+              name = "Prognostic role", # 图例名称
+              cluster_rows = F, # 不做行聚类
+              cluster_columns = F, # 不做列聚类
+              col = c(red,green,"grey50","white"), # 热图单元格颜色
+              show_row_names = T, # 展示行名
+              show_column_names = F, # 不展示列名 
+              row_names_side = "left", # 行名显示在左侧
+              top_annotation = HeatmapAnnotation(df = annCol,
+                                                 col = annColors,
+                                                 gp = gpar(col = "black"),
+                                                 border = TRUE),
+              width = grid::unit(8, "cm"),
+              height = grid::unit(15, "cm"),
+              heatmap_legend_param = list(at = c(0, 1, 2, 3), # 将图例的0123改成对应的文字
+                                          legend_gp = grid::gpar(fill = col_fun(c(0,1,2,3))),
+                                          labels = c("Risky", "Protective","N/A","Nonsense")))
+pdf("figures/pancancer_GZMK_prognostic_heatmap.pdf", width = 10,height = 10)
+draw(hm)
+invisible(dev.off())
+
+
+## 绘制基于OS的森林图
+fpInput <- outTab.cox[which(outTab.cox$event == "OS"),]
+hrtable <- fpInput[,c("tumor","event","beta","hr","lower","upper","p")]
+
+tabletext <- cbind(c("Cancers",hrtable$tumor),
+                   c("p value",ifelse(round(as.numeric(hrtable$p),3) < 0.001,"<0.001",round(as.numeric(hrtable$p),3))),
+                   c("HR (95L-95H)",paste0(round(as.numeric(hrtable$hr),3), " (",
+                                          round(as.numeric(hrtable$lower),3),"-",
+                                          round(as.numeric(hrtable$upper),3),")")))
+
+pdf("figures/pancancer_GZMK_forestplot_risktable.pdf", width = 8, height = 8)
+forestplot(labeltext=tabletext,
+           mean=c(NA,as.numeric(hrtable$hr)),# HR
+           lower=c(NA,as.numeric(hrtable$lower)), # 95%置信区间下限
+           upper=c(NA,as.numeric(hrtable$upper)),# 95%置信区间上限
+           graph.pos = 4,#图在表中的列位置
+           graphwidth = unit(.3,"npc"),# 图在表中的宽度比
+           fn.ci_norm="fpDrawDiamondCI",# box类型选择钻石
+           col=fpColors(box="grey50", lines="grey50", zero = "black"),#box颜色
+           boxsize=c(NA,ifelse(as.numeric(hrtable$p) < 0.05,0.8,0.4)),#box大小固定
+           lwd.ci=1,
+           ci.vertices.height = 0.1,ci.vertices=F,#不显示区
+           zero=1,# zero线横坐标
+           lwd.zero=2,# zero线宽
+           xticks = c(0,1,2,4,8,13),# 横坐标刻度根据需要可随意设置
+           lwd.xaxis=2,
+           xlab="Hazard ratio",
+           hrzl_lines=list("1" = gpar(lwd=2, col="black"),
+                           "34" = gpar(lwd=2, col="black")),#最后一行底部加黑线???""中数字为nrow(tabletext) + 1
+           txt_gp=fpTxtGp(label=gpar(cex=1),#各种字体大小设置
+                          ticks=gpar(cex=0.85),
+                          xlab=gpar(cex=1),
+                          title=gpar(cex=1.2)),
+           lineheight = unit(.55,"cm"),#固定行高
+           colgap = unit(0.4,"cm"),
+           mar=unit(rep(1.5, times = 4), "cm"),
+           new_page = F
+)
+invisible(dev.off())
+```
+
+
+# pancanCor
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(ggplot2)
+library(data.table)
+library(cowplot)
+library(ggpubr)
+library(GSVA)
+library(SimDesign)
+library(tidyr)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 自定义函数将gmt文件读取为list
+```{r}
+gmt2list <- function(annofile){
+  if (!file.exists(annofile)) {
+    stop("There is no such gmt file.")
+  }
+  
+  if (tools::file_ext(annofile) == "xz") {
+    annofile <- xzfile(annofile)
+    x <- scan(annofile, what="", sep="\n", quiet=TRUE)
+    close(annofile)
+  } else if (tools::file_ext(annofile) == "gmt") {
+    x <- scan(annofile, what="", sep="\n", quiet=TRUE)
+  } else {
+    stop ("Only gmt and gmt.xz are accepted for gmt2list")
+  }
+  
+  y <- strsplit(x, "\t")
+  names(y) <- sapply(y, `[[`, 1)
+  
+  annoList <- lapply(y, `[`, c(-1,-2))
+}
+```
+
+## 输入文件
+merged_sample_quality_annotations.tsv，肿瘤注释文件。下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas>，下载地址<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
+EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv，表达矩阵，第一列是基因，之后是其在每个样本中的表达量。下载自<http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>。
+Survival_SupplementalTable_S1_20171025_xena_sp，生存数据。来自<https://xenabrowser.net/datapages/?dataset=Survival_SupplementalTable_S1_20171025_xena_sp&host=https%3A%2F%2Fpancanatlas.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443>
+```{r}
+# 读取风险基因以及对应系数（来自原文补充材料表格Table S6）
+risk.coeff <- read.table("easyinput/easyinput_mygene_riskscore.txt",sep = "\t", row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
+
+# 加载前期处理过的输入数据
+load(file = "easyinput/pancancer_EBPlusPlusAdjustexpr_GSEAinput.Rdata")
+
+# 去掉对于风险基因存在NA值的样本
+expr.sub <- expr[risk.coeff$Gene, ] # 提取仅有风险相关基因的表达谱子集
+expr.sub <- as.data.frame(t(na.omit(t(expr.sub)))) # 对列做去空值，而非对行做
+keepSam <- colnames(expr.sub) # 提取被保留的样本
+expr <- expr[,keepSam] # 重构表达谱
+
+# 读取生存数据(虽然在本代码中没有用到，但是原文使用的样本是具有生存数据的)
+surv <- read.delim("rawdata/Survival_SupplementalTable_S1_20171025_xena_sp", sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T) 
+
+# 确定肿瘤样本以及对应肿瘤类型
+sam <- samAnno[which(samAnno$`cancer type` != "LAML"),"simple_barcode"] # 去掉白血病样本
+comsam <- intersect(intersect(colnames(expr), sam), rownames(surv)) # 得到与表达谱以及生存的共有样本
+tumsam <- comsam[substr(comsam,14,14) == "0"] # 仅提取肿瘤样本
+tumAnno <- samAnno[which(samAnno$simple_barcode %in% tumsam),] # 获取这些肿瘤样本的注释信息
+tumAnno <- tumAnno[order(tumAnno$`cancer type`),] # 根据肿瘤类型排序
+tumors <- unique(tumAnno$`cancer type`) # 得到32个肿瘤
+
+
+# 在所有样本中计算NETs得分(在本代码中仅仅是为了确定根据cox-based nets score确定肿瘤的level)
+nets.score <- list() # 初始化列表
+nets.mean <- c() # 初始化得分均值向量
+outTab <- NULL
+for (i in tumors) {
+  sam <- tumAnno[which(tumAnno$`cancer type` == i),"simple_barcode"] # 提取当前肿瘤类型的肿瘤样本
+  expr.sub <- log2(expr[risk.coeff$Gene,sam] + 1) # 提取表达谱子集并对数化
+  nets <- scale(apply(expr.sub,2,function(x) {x %*% risk.coeff$Coefficient})) # 计算经过z-score的得分
+  nets.score[[i]] <- nets
+  nets.mean <- c(nets.mean, mean(nets))
+  outTab <- rbind.data.frame(outTab, # 保存得分的计算结果
+                             data.frame(tumor = i, # 肿瘤类型
+                                        NETs = as.numeric(nets), # 当前得分
+                                        row.names = sam,
+                                        stringsAsFactors = F),
+                             stringsAsFactors = F)
+}
+sapply(nets.score, range) # 不存在空值
+write.table(outTab, file = "output/nets score of all tumor sample across 32 tumor types.txt",sep = "\t",row.names = T,col.names = F,quote = F)
+names(nets.mean) <- tumors
+nets.mean <- sort(nets.mean, decreasing = T) # 根据均值对肿瘤进行排序
+tumor.level <- names(nets.mean) # 将排序结果作为肿瘤因子的等级
+
+# 在所有样本中通过z-score计算致癌通路以及NETs得分（注意此时NETs得分不再是由cox系数计算，而是由zscore算法下的单样本富集得到）
+oncosig <- gmt2list("rawdata/oncogenic.gmt") # 将原文补充材料S4以及S6的基因制作成gmt文件，并将gmt文件读取为list
+oncosig <- sapply(oncosig, function(x) setdiff(x,"")) # 去掉list中的空值
+zscore.list <- list()
+outSig <- NULL
+for (i in tumors) {
+  message(i)
+  sam <- tumAnno[which(tumAnno$`cancer type` == i),"simple_barcode"] # 提取当前肿瘤类型的肿瘤样本
+  expr.sub <- log2(expr[,sam] + 1) # 提取表达谱子集并对数化
+  zscore.list[[i]] <- quiet(gsva(as.matrix(expr.sub), gset.idx.list = oncosig, method = "zscore")) # 方法选择zscore
+  outSig <- rbind.data.frame(outSig, # 保存得分的计算结果
+                             cbind.data.frame(tumor = i,
+                                              as.data.frame(t(zscore.list[[i]]))),
+                             stringsAsFactors = F)
+}
+write.table(outSig, file = "output/oncogenic and GZMscores of all tumor sample across 32 tumor types.txt",sep = "\t",row.names = T,col.names = F,quote = F)
+
+
+# 开始画图
+# 设置颜色
+mycol <- c("#A6CEE3","#1F78B4","#B2DF8A","#33A02C","#FB9A99","#E31A1C","#FDBF6F","#FF7F00","#CAB2D6","#6A3D9A","#B15928","#8DD3C7","#BEBADA","#FB8072","#80B1D3","#FDB462","#B3DE69","#FCCDE5","#D9D9D9","#BC80BD","#CCEBC5","#FFED6F","#8C510A","#BF812D","#DFC27D","#F6E8C3","#80CDC1","#35978F","#01665E","#003C30","#8E0152","#C51B7D")
+
+# 制作绘图数据并绘图
+plotdata <- outSig
+plotdata <- gather(plotdata, oncogenic, zscore, Angiogenesis:`Cell cycle`, factor_key=TRUE)
+plotdata$tumor <- factor(plotdata$tumor, levels = tumor.level)
+
+p1 <- ggplot(data = plotdata, aes(x = zscore, y = NETs)) + 
+  geom_point(aes(color=tumor),size=1.5,alpha = 0.5) +
+  scale_color_manual(values = mycol) + 
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_ribbon(stat = "smooth",method = "lm",se = TRUE,alpha = 0,linetype = "dashed") + 
+  xlab("Oncogenic (z-score)") + ylab("GZMscores (z-score)") + 
+  stat_cor(method = "pearson", label.x = -40, label.y = 10) + 
+  facet_wrap(.~oncogenic, nrow = 1) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(vjust = 0.5, size = 12, color = "black"),
+        axis.ticks = element_line(size=0.2, color="black"),
+        axis.ticks.length = unit(0.2, "cm"),
+        legend.position = "right",
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12))
+ggsave(filename = "figures/correlation scatter plot of zscored oncogenic and GZMscores in pancancer.pdf", width = 15,height = 5)
+
+tmp1 <- plotdata[which(plotdata$oncogenic == "Angiogenesis"),]
+p2 <- ggplot(data = tmp1, aes(x = zscore, y = NETs)) + 
+  geom_point(aes(color=tumor),size=1.2,alpha = 0.5) +
+  scale_color_manual(values = mycol) + 
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_ribbon(stat = "smooth",method = "lm",se = TRUE,alpha = 0,linetype = "dashed") + 
+  stat_cor(method = "pearson", label.x = -40, label.y = 10) + 
+  xlab("Angiogenesis (z-score)") + ylab("GZMs (z-score)") + 
+  facet_wrap(.~tumor, ncol = 8) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(vjust = 0.5, size = 12, color = "black"),
+        axis.ticks = element_line(size=0.2, color="black"),
+        axis.ticks.length = unit(0.2, "cm"),
+        legend.position = "none",
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12))
+ggsave(filename = "figures/correlation scatter plot of zscored Angiogenesis and GZMscores in pancancer.pdf", width = 15,height = 8)
+
+tmp2 <- plotdata[which(plotdata$oncogenic == "EMT"),]
+p3 <- ggplot(data = tmp2, aes(x = zscore, y = NETs)) + 
+  geom_point(aes(color=tumor),size=1.2,alpha = 0.5) +
+  scale_color_manual(values = mycol) + 
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_ribbon(stat = "smooth",method = "lm",se = TRUE,alpha = 0,linetype = "dashed") + 
+  stat_cor(method = "pearson", label.x = -40, label.y = 10) + 
+  xlab("EMT (z-score)") + ylab("GZMs (z-score)") + 
+  facet_wrap(.~tumor, ncol = 8) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(vjust = 0.5, size = 12, color = "black"),
+        axis.ticks = element_line(size=0.2, color="black"),
+        axis.ticks.length = unit(0.2, "cm"),
+        legend.position = "none",
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 12))
+ggsave(filename = "figures/correlation scatter plot of zscored EMT and GZMscores in pancancer.pdf", width = 15,height = 8)
+
+p <- plot_grid(p1,p2,p3, align = "v", ncol = 1)
+ggsave(filename = "figures/pancancer_mygene_oncogenic.pdf", width = 15,height = 18)
+```
