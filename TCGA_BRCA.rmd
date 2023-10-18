@@ -1,6 +1,6 @@
 ---
 title: "FigureQi_Multi-gene Analysis"
-author: "Jie Qiqi"
+author: "Qiqi Xie"
 date: "June 21, 2023"
 output: html_document
 ---
