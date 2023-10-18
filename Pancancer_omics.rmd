@@ -2,6 +2,10 @@
 title: "FigureQi_Pan-cancer Analysis"
 author: "Qiqi Xie"
 date: "2023/10/05"
+title: "FigureQi_Pan-cancer Analysis"
+author: "Qiqi Xie"
+date: "2023/10/05"
+
 output: html_document
 ---
 
@@ -266,25 +270,26 @@ Sys.setenv(LANGUAGE = "en") #显示英文报错信息
 options(stringsAsFactors = FALSE) #禁止chr转成factor
 ```
 
-## 输入文件
-mc3.v0.2.8.PUBLIC.maf.gz，TCGA pancancer突变数据，下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas> Mutations，下载地址<http://api.gdc.cancer.gov/data/1c8cfe5f-e52d-41ba-94da-f15ea1337efc>
-merged_sample_quality_annotations.tsv，下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas>，下载地址<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
+## Input files
+mc3.v0.2.8.PUBLIC.maf.gz, TCGA pancancer mutation data, downloaded from <https://gdc.cancer.gov/about-data/publications/pancanatlas> Mutations, download link <http://api.gdc.cancer.gov/data/1c8cfe5f-e52d-41ba-94da-f15ea1337efc>
+merged_sample_quality_annotations.tsv, downloaded from <https://gdc.cancer.gov/about-data/publications/pancanatlas>, download link <http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>.
 ```{r}
-# 修正TCGA名称
+# Correct TCGA names
 load(file = "easyinput/easyinput_samAnno.Rdata")
 
-# 加载泛癌突变MAF文件
+# Load pancancer mutation MAF file
 panmaf <- read_tsv("rawdata/mc3.v0.2.8.PUBLIC.maf.gz", comment = "#")
 unique(panmaf$Variant_Classification)
 
-# 感兴趣基因列表
+# List of genes of interest
 genelist <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
 ```
 
-## 计算累积突变样本量
+</rewritten_selection_following_instructions>
+# Calculate cumulative mutation sample volume
 ```{r}
-# 设置coding区域的突变以及非coding区域的突变
-## coding区域（个人认为是非沉默突变）
+# Set mutations in the coding region and non-coding region
+## Coding region (I think it's non-silent mutation)
 vc_nonSyn <- c("Frame_Shift_Del",
                "Frame_Shift_Ins",
                "Splice_Site",
@@ -294,7 +299,7 @@ vc_nonSyn <- c("Frame_Shift_Del",
                "In_Frame_Del",
                "In_Frame_Ins",
                "Missense_Mutation")
-## 非coding区域（个人认为是沉默突变）
+## Non-coding region (I think it's silent mutation)
 vc_Syn <- c("3'UTR",
             "5'UTR",
             "3'Flank",
@@ -303,7 +308,7 @@ vc_Syn <- c("3'UTR",
             "Intron",
             "Silent")
 
-# 获取不同癌种的样本数
+# Get the number of samples of different cancers
 mafsam <- data.frame(samID = panmaf$Tumor_Sample_Barcode,
                      simple_barcode = substr(panmaf$Tumor_Sample_Barcode,1,15),
                      stringsAsFactors = F)
@@ -313,17 +318,46 @@ mafsam <- as.data.frame(na.omit(mafsam))
 
 txt <- data.frame(label = paste0(names(table(mafsam$`cancer type`))," (n=", as.numeric(table(mafsam$`cancer type`)),")"),
                   "cancer type" = names(table(mafsam$`cancer type`)),
-                  check.names = F) # 将肿瘤和样本数标签合并
+                  check.names = F) # Merge tumor and sample number labels
 mafsam <- merge(mafsam, txt, by = "cancer type", all.x = TRUE)
 rownames(mafsam) <- mafsam$simple_barcode
 
-# 取感兴趣的突变子集
+# Take the subset of mutations of interest
 # is.element(genelist, panmaf$Hugo_Symbol)
 panmaf <- panmaf[which(panmaf$Hugo_Symbol %in% genelist),]
 panmaf$Tumor_Sample_Barcode <- substr(panmaf$Tumor_Sample_Barcode,1,15)
 write.table(panmaf, file = "output/maf of genes of interest.txt",sep = "\t",row.names = F,col.names = T,quote = F)
 
-# 创建突变矩阵
+# Create mutation matrix
+panmaf <- read_tsv("output/maf of genes of interest.txt", comment = "#")
+nonSyncount <- matrix(0, nrow = length(genelist), ncol = length(mafsam$simple_barcode),
+                   dimnames = list(genelist, mafsam$simple_barcode))
+Syncount <- matrix(0, nrow = length(genelist), ncol = length(mafsam$simple_barcode),
+                   dimnames = list(genelist, mafsam$simple_barcode))
+nonSyncount <- as.data.frame(t(nonSyncount))
+Syncount <- as.data.frame(t(Syncount))
+...|
+# Get the number of samples of different cancers
+mafsam <- data.frame(samID = panmaf$Tumor_Sample_Barcode,
+                     simple_barcode = substr(panmaf$Tumor_Sample_Barcode,1,15),
+                     stringsAsFactors = F)
+mafsam <- mafsam[!duplicated(mafsam$simple_barcode),]
+mafsam <- merge(mafsam,samAnno, by = "simple_barcode", all.x = TRUE)
+mafsam <- as.data.frame(na.omit(mafsam))
+
+txt <- data.frame(label = paste0(names(table(mafsam$`cancer type`))," (n=", as.numeric(table(mafsam$`cancer type`)),")"),
+                  "cancer type" = names(table(mafsam$`cancer type`)),
+                  check.names = F) # Merge tumor and sample number labels
+mafsam <- merge(mafsam, txt, by = "cancer type", all.x = TRUE)
+rownames(mafsam) <- mafsam$simple_barcode
+
+# Take the subset of mutations of interest
+# is.element(genelist, panmaf$Hugo_Symbol)
+panmaf <- panmaf[which(panmaf$Hugo_Symbol %in% genelist),]
+panmaf$Tumor_Sample_Barcode <- substr(panmaf$Tumor_Sample_Barcode,1,15)
+write.table(panmaf, file = "output/maf of genes of interest.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+
+# Create mutation matrix
 panmaf <- read_tsv("output/maf of genes of interest.txt", comment = "#")
 nonSyncount <- matrix(0, nrow = length(genelist), ncol = length(mafsam$simple_barcode),
                    dimnames = list(genelist, mafsam$simple_barcode))
@@ -333,25 +367,25 @@ nonSyncount <- as.data.frame(t(nonSyncount))
 Syncount <- as.data.frame(t(Syncount))
 for (i in genelist) {
   message(i," starts...")
-  submaf <- panmaf[which(panmaf$Hugo_Symbol == i),] # 取出当前基因的突变
-  for (j in 1:nrow(submaf)) { # 循环每一行
+  submaf <- panmaf[which(panmaf$Hugo_Symbol == i),] # Extract the mutations of the current gene
+  for (j in 1:nrow(submaf)) { # Loop through each row
     tmp <- submaf[j,]
-    mutGene <- i # 获取当前突变的基因
-    mutSam <- tmp$Tumor_Sample_Barcode # 获取当前突变的样本
-    if(is.element(tmp$Variant_Classification, vc_nonSyn)) { # 如果突变类型为coding类
-      nonSyncount[mutSam, mutGene] <- 1 # 则coding计数矩阵设为1
+    mutGene <- i # Get the current mutated gene
+    mutSam <- tmp$Tumor_Sample_Barcode # Get the current mutated sample
+    if(is.element(tmp$Variant_Classification, vc_nonSyn)) { # If the mutation type is coding
+      nonSyncount[mutSam, mutGene] <- 1 # Then set the coding count matrix to 1
     }
-    if(is.element(tmp$Variant_Classification, vc_Syn)) { # 如果突变类型为非coding类
-      Syncount[mutSam, mutGene] <- 1 # 则非coding计数矩阵设为1
+    if(is.element(tmp$Variant_Classification, vc_Syn)) { # If the mutation type is non-coding
+      Syncount[mutSam, mutGene] <- 1 # Then set the non-coding count matrix to 1
     }
   }
 }
 
-# 根据癌种计算累积突变样本量
+# Calculate cumulative mutation sample volume based on cancer type
 nonSyncount$tumor <- mafsam[rownames(nonSyncount),"label"]
 Syncount$tumor <- mafsam[rownames(Syncount),"label"]
-nonSyncount.tumor <- as.data.frame(apply(nonSyncount[,setdiff(colnames(nonSyncount), "tumor")], 2, function(x) tapply(x, INDEX=factor(nonSyncount$tumor), FUN=sum, na.rm=TRUE))) # 对同一种癌种的非沉默突变求和
-Syncount.tumor <- as.data.frame(apply(Syncount[,setdiff(colnames(Syncount), "tumor")], 2, function(x) tapply(x, INDEX=factor(Syncount$tumor), FUN=sum, na.rm=TRUE))) # 对同一种癌种的沉默突变求和
+nonSyncount.tumor <- as.data.frame(apply(nonSyncount[,setdiff(colnames(nonSyncount), "tumor")], 2, function(x) tapply(x, INDEX=factor(nonSyncount$tumor), FUN=sum, na.rm=TRUE))) # Sum non-silent mutations for the same cancer type
+Syncount.tumor <- as.data.frame(apply(Syncount[,setdiff(colnames(Syncount), "tumor")], 2, function(x) tapply(x, INDEX=factor(Syncount$tumor), FUN=sum, na.rm=TRUE))) # Sum silent mutations for the same cancer type
 
 mutCount <- matrix(NA, nrow = length(genelist), ncol = length(unique(mafsam$label)),
                    dimnames = list(genelist, unique(mafsam$label)))
@@ -360,23 +394,23 @@ mutFreq <- mutCount
 for (i in genelist) {
   for(j in unique(mafsam$label)) {
     tumor <- sapply(strsplit(j," (", fixed = T),"[",1)
-    if(nonSyncount.tumor[j,i] > 0) { # 若非沉默突变存在
-      mutCount[i,j] <- nonSyncount.tumor[j,i] # 记录该癌种的非沉默突变数
-      mutFreq[i,j] <- nonSyncount.tumor[j,i]/as.numeric(table(mafsam$`cancer type`)[tumor]) * 100 # 根据该癌种的样本数计算突变频率（个人认为原文并没有如此计算，原文的颜色映射似乎是按照突变数目来的，而不是突变频率）
+    if(nonSyncount.tumor[j,i] > 0) { # If non-silent mutations exist
+      mutCount[i,j] <- nonSyncount.tumor[j,i] # Record the number of non-silent mutations of this cancer type
+      mutFreq[i,j] <- nonSyncount.tumor[j,i]/as.numeric(table(mafsam$`cancer type`)[tumor]) * 100 # Calculate mutation frequency based on the number of samples of this cancer type (I think the original text did not calculate this way, the color mapping of the original text seems to be based on the number of mutations, not the mutation frequency)
     }
-    if(nonSyncount.tumor[j,i] == 0 & Syncount.tumor[j,i] > 0) { # 若非沉默突变不存在，而沉默突变存在
-      mutCount[i,j] <- 0 # 则记录该癌种的突变数目为0
-      mutFreq[i,j] <- 0 # 突变频率为0
+    if(nonSyncount.tumor[j,i] == 0 & Syncount.tumor[j,i] > 0) { # If non-silent mutations do not exist, but silent mutations exist
+      mutCount[i,j] <- 0 # Then record the number of mutations of this cancer type as 0
+      mutFreq[i,j] <- 0 # Mutation frequency is 0
     }
-    if(nonSyncount.tumor[j,i] == 0 & Syncount.tumor[j,i] == 0) { # 若非沉默突变不存在，沉默突变也不存在
-      mutCount[i,j] <- NA # 则此单元为空值
-      mutFreq[i,j] <- 0 # 突变频率为0
+    if(nonSyncount.tumor[j,i] == 0 & Syncount.tumor[j,i] == 0) { # If non-silent mutations do not exist, and silent mutations also do not exist
+      mutCount[i,j] <- NA # Then this cell is empty
+      mutFreq[i,j] <- 0 # Mutation frequency is 0
     }
   }
 }
 
 
-# 开始画图
+# Start plotting
 ## Mutation frequency of melatonergic regulators
 ggCount <- melt(as.matrix(mutCount), varnames = c("Cancer", "Gene"), as.is = T) 
 ggFreq <- melt(as.matrix(mutFreq), varnames = c("Cancer", "Gene"), as.is = T) 
@@ -418,7 +452,7 @@ panmaf <- read.maf(maf = "output/maf of genes of interest.txt",
 mafAnno <- mafsam[which(mafsam$simple_barcode %in% panmaf@data$Tumor_Sample_Barcode),]
 colnames(mafAnno)[1:2] <- c("Cancer","Tumor_Sample_Barcode")
 
-# 设置突变颜色
+# Set mutation color
 mutcol <- brewer.pal(n = 10, name = 'Paired')
 names(mutcol) <- c('Frame_Shift_Del','Missense_Mutation', 'Nonsense_Mutation', 'Frame_Shift_Ins','In_Frame_Ins', 'Splice_Site', 'In_Frame_Del','Nonstop_Mutation','Translation_Start_Site','Multi_Hit')
 
@@ -427,15 +461,15 @@ names(cancercolors) <- unique(mafAnno$Cancer)
 
 annocolors = list(Cancer = cancercolors)
 pdf(file = "figures/mygene_oncoprint.pdf", width = 10, height = 5)
-oncoplot(maf = panmaf, # MAF文件
-         colors = mutcol, # 突变类型的颜色
-         minMut = 0.05 * nrow(mafAnno), # 所显示的突变至少有5%的突变频率
-         bgCol = "grey95", # 瀑布图背景色
-         borderCol = NA, # 突变的边框（由于样本太多所以不设置边框）
-         annotationDat = mafAnno, # 样本注释文件
+oncoplot(maf = panmaf, # MAF file
+         colors = mutcol, # Mutation type color
+         minMut = 0.05 * nrow(mafAnno), # The displayed mutation has at least a 5% mutation frequency
+         bgCol = "grey95", # Waterfall chart background color
+         borderCol = NA, # Mutation border (no border is set due to too many samples)
+         annotationDat = mafAnno, # Sample annotation file
          annotationColor = annocolors,
-         clinicalFeatures = "Cancer", # 从注释文件中显示的信息
-         sortByAnnotation = T) # 按照mafAnno的第一列排序，即按照Cancer排序
+         clinicalFeatures = "Cancer", # Information displayed from the annotation file
+         sortByAnnotation = T) # Sort by the first column of mafAnno, that is, sort by Cancer
 invisible(dev.off())
 ```
 
@@ -453,50 +487,50 @@ library(GSVA)
 library(clusterProfiler)
 library(impute)
 library(ComplexHeatmap)
-data("probe.features") # 读取甲基化450k数据的探针注释
-Sys.setenv(LANGUAGE = "en") #显示英文报错信息
-options(stringsAsFactors = FALSE) #禁止chr转成factor
+data("probe.features") # Load the annotation of methylation 450k data probes
+Sys.setenv(LANGUAGE = "en") # Display error messages in English
+options(stringsAsFactors = FALSE) # Prevent chr from being converted to factor
 ```
 
-# 输入文件
-merged_sample_quality_annotations.tsv，下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas>，下载地址<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
-tcga_methy450文件夹里面是甲基化数据，过滤掉了有空值的探针，均已保存为RData文件，微云链接：<https://share.weiyun.com/jRry4rlU>。下载后把tcga_methy450文件夹放到当前文件夹。
+# Input files
+merged_sample_quality_annotations.tsv, downloaded from <https://gdc.cancer.gov/about-data/publications/pancanatlas>, download link <http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>.
+The tcga_methy450 folder contains methylation data, with probes with null values filtered out, all saved as RData files, Weiyun link: <https://share.weiyun.com/jRry4rlU>. After downloading, put the tcga_methy450 folder in the current folder.
 ```{r}
-# 获得同时有肿瘤和正常样本的肿瘤名
+# Get the names of tumors that have both tumor and normal samples
 tumors <- c("BLCA","BRCA","CESC","CHOL","COAD",
             "ESCA","GBM","HNSC","KICH","KIRC",
             "KIRP","LIHC","LUAD","LUSC","PAAD",
             "PRAD","READ","STAD","THCA","UCEC")
 
-# 获得感兴趣的基因集
+# Get the interested gene set
 gene_group <- read.table("easyinput/easy_input_gene.txt",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
 gene_group[which(gene_group$SYMBOL == "IL28A"),"SYMBOL"] <- "IFNL2" #
 frg <- gene_group$SYMBOL
 
-# 修正TCGA名称
+# Correct TCGA names
 # https://gdc.cancer.gov/about-data/publications/pancanatlas
 load(file = "easyinput/easyinput_samAnno.Rdata")
 
-# 提取匹配到FRG基因的启动子探针
-promoter <- probe.features[which(probe.features$feature %in% c("TSS1500","TSS200")),] # 根据注释文件筛选启动子探针，也可以分析其他探针比如增强子Enhancer等等
-promoter <- promoter[which(promoter$gene %in% frg),] # 取出感兴趣基因在感兴趣位点的探针
+# Extract promoter probes that match to FRG genes
+promoter <- probe.features[which(probe.features$feature %in% c("TSS1500","TSS200")),] # Filter promoter probes according to annotation file, other probes such as Enhancer can also be analyzed
+promoter <- promoter[which(promoter$gene %in% frg),] # Take out the probes of interested genes at interested sites
 write.table(promoter, "output/promoter_annotation_for_interested_genes.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
 
-# 获取只有感兴趣探针/基因的甲基化子集
-for (i in tumors) { # 比较慢请耐心
+# Get methylation subset with only interested probes/genes
+for (i in tumors) { # It's slow, please be patient
   message("--",i,"...")
-  load(file.path("rawdata/tcga_methy450",paste0("TCGA-",i,"_methy450.RData"))) # 加载甲基化RData文件
-  methy450 <- as.data.frame(methy450) # 转数据框
-  rownames(methy450) <- methy450[,1] # 行名改为第一列
-  methy450 <- methy450[,-1] # 去掉第一列探针名
-  dimname <- dimnames(methy450) # 获取行名和列明
-  methy450 <- sapply(methy450, as.numeric) # 将数据全部转为数值以防报错
-  dimnames(methy450) <- dimname # 重新赋值行名和列名
-  methy450 <- as.data.frame(methy450) # 转数据框
+  load(file.path("rawdata/tcga_methy450",paste0("TCGA-",i,"_methy450.RData"))) # Load methylation RData file
+  methy450 <- as.data.frame(methy450) # Convert to data frame
+  rownames(methy450) <- methy450[,1] # Change row name to the first column
+  methy450 <- methy450[,-1] # Remove the first column of probe name
+  dimname <- dimnames(methy450) # Get row names and column names
+  methy450 <- sapply(methy450, as.numeric) # Convert all data to numeric to prevent errors
+  dimnames(methy450) <- dimname # Reassign row names and column names
+  methy450 <- as.data.frame(methy450) # Convert to data frame
   
-  compb <- intersect(rownames(methy450),rownames(promoter)) # 获取甲基化数据和感兴趣探针的交集
-  methy450 <- methy450[compb,] # 取出子集
-  methy450$gene <- promoter[compb,"gene"] # 将探针名和基因名进行映射
+  compb <- intersect(rownames(methy450),rownames(promoter)) # Get the intersection of methylation data and interested probes
+  methy450 <- methy450[compb,] # Take out subset
+  methy450$gene <- promoter[compb,"gene"] # Map probe name to gene name
   
   # 如果基因匹配多个探针，则取中位数beta值
   methy450 <- apply(methy450[,setdiff(colnames(methy450), "gene")], 2, function(x) tapply(x, INDEX=factor(methy450$gene), FUN=median, na.rm=TRUE))
@@ -556,8 +590,8 @@ for (i in tumors) {
 write.table(deltaMeth, "output/TCGA_pancan_delta_meth_subset.txt",sep = "\t",row.names = F,col.names = T,quote = F)
 
 
-# 开始画图
-# 设置颜色
+# Start plotting
+# Set colors
 blue <- "#4577FF"
 red <- "#C2151A"
 orange <- "#E45737"
@@ -566,7 +600,7 @@ darkblue <- "#303B7F"
 darkred <- "#D51113"
 yellow <- "#EECA1F"
 
-# 产生泡泡图
+# Generate bubble chart
 deltaMeth$gene <- factor(deltaMeth$gene,
                          levels = rev(frg))
 
@@ -606,32 +640,32 @@ Sys.setenv(LANGUAGE = "en") #显示英文报错信息
 options(stringsAsFactors = FALSE) #禁止chr转成factor
 ```
 
-## 输入文件
-EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv，表达矩阵，第一列是基因，之后是其在每个样本中的表达量。下载自<http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>。
-merged_sample_quality_annotations.tsv，下载自<https://gdc.cancer.gov/about-data/publications/pancanatlas>，下载地址<http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>。
-tcga_methy450文件夹里面是甲基化数据，过滤掉了有空值的探针，均已保存为RData文件，微云链接：<https://share.weiyun.com/jRry4rlU>。下载后把tcga_methy450文件夹放到当前文件夹。
+## Input files
+EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv, expression matrix, the first column is the gene, and the following are its expression in each sample. Downloaded from <http://api.gdc.cancer.gov/data/3586c0da-64d0-4b74-a449-5ff4d9136611>.
+merged_sample_quality_annotations.tsv, downloaded from <https://gdc.cancer.gov/about-data/publications/pancanatlas>, download link <http://api.gdc.cancer.gov/data/1a7d7be8-675d-4e60-a105-19d4121bdebf>.
+The tcga_methy450 folder contains methylation data, with probes with null values filtered out, all saved as RData files, Weiyun link: <https://share.weiyun.com/jRry4rlU>. After downloading, put the tcga_methy450 folder in the current folder.
 ```{r}
-# 获得同时有肿瘤和正常样本的肿瘤名
+# Get the names of tumors that have both tumor and normal samples
 tumors <- c("BLCA","BRCA","CESC","CHOL","COAD",
             "ESCA","GBM","HNSC","KICH","KIRC",
             "KIRP","LIHC","LUAD","LUSC","PAAD",
             "PRAD","READ","STAD","THCA","UCEC")
 
-# 获得感兴趣的基因集
+# Get the interested gene set
 gene_group <- read.table("easyinput/easy_input_gene.txt",sep = "\t",row.names = NULL,check.names = F,stringsAsFactors = F,header = T)
 gene_group[which(gene_group$SYMBOL == "IL28A"),"SYMBOL"] <- "IFNL2" #
 frg <- gene_group$SYMBOL
 
-# 修正TCGA名称
+# Correct TCGA name
 # https://gdc.cancer.gov/about-data/publications/pancanatlas
 load(file = "easyinput/easyinput_samAnno.Rdata")
 
-# 提取匹配到FRG基因的启动子探针
-promoter <- probe.features[which(probe.features$feature %in% c("TSS1500","TSS200")),]# 根据注释文件筛选启动子探针，也可以分析其他探针比如增强子Enhancer等等
-promoter <- promoter[which(promoter$gene %in% frg),] # 取出感兴趣基因在感兴趣位点的探针
+# Extract promoter probes that match to FRG genes
+promoter <- probe.features[which(probe.features$feature %in% c("TSS1500","TSS200")),]# Filter promoter probes according to the annotation file, you can also analyze other probes such as Enhancer, etc.
+promoter <- promoter[which(promoter$gene %in% frg),] # Take out the probes of interested genes at interested sites
 write.table(promoter, "output/promoter_annotation_for_interested_genes.txt",sep = "\t",row.names = T,col.names = NA,quote = F)
 
-# 快速读取表达谱
+# Quickly read the expression spectrum
 # https://gdc.cancer.gov/about-data/publications/pancanatlas
 load(file = "easyinput/pancancer_EBPlusPlusAdjustexpr_CNVinput.Rdata")
 

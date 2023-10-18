@@ -1,0 +1,6 @@
+SYMBOL	Group
+GZMA	Positive
+GZMB	Positive
+GZMH	Negative
+GZMM	Negative
+GZMK	Negative
