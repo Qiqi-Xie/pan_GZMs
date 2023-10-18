@@ -1,0 +1,2815 @@
+---
+title: "FigureQi_Multi-gene Analysis"
+author: "Jie Qiqi"
+date: "June 21, 2023"
+output: html_document
+---
+
+# Data Download and Expression Matrix Preprocessing
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(dplyr)
+library(tidyverse)
+options(stringsAsFactors = F)
+
+# Create new folders
+folder_names <- c("rawdata", "easyinput", "output", "figures")
+
+# For each folder name, if it does not exist, create a new folder
+lapply(folder_names, function(x) {
+  if (!file.exists(x)) {
+    dir.create(x)
+  }
+})
+
+# First download the data related to UCSC Xena cancer
+download.file("https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-BRCA.GDC_phenotype.tsv.gz",destfile = "rawdata/TCGA-BRCA.GDC_phenotype.tsv.gz",method = "wget", mode='wb') # Clinical phenotype data
+download.file("https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-BRCA.survival.tsv",destfile = "rawdata/TCGA-BRCA.survival.tsv",method = "wget", mode='wb') # Survival data
+download.file("https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-BRCA.htseq_counts.tsv.gz",destfile = "rawdata/TCGA-BRCA.htseq_counts.tsv.gz",method = "curl", mode='a') # counts expression data
+download.file("https://gdc-hub.s3.us-east-1.amazonaws.com/download/gencode.v22.annotation.gene.probeMap",destfile = "rawdata/gencode.v22.annotation.gene.probeMap",method = "curl", mode='a') # annotation data
+download.file("https://gdc-hub.s3.us-east-1.amazonaws.com/download/TCGA-BRCA.htseq_fpkm.tsv.gz",destfile = "rawdata/TCGA-BRCA.htseq_fpkm.tsv.gz",method = "curl", mode='a') # fpkm expression data
+
+## Read data
+plat <- data.table::fread(file = "rawdata/gencode.v22.annotation.gene.probeMap",data.table = F)
+exp_counts_data <- data.table::fread(file = "rawdata/TCGA-BRCA.htseq_counts.tsv.gz",data.table = F)
+
+## Process data
+colnames(plat)[1] <- c("Ensembl_ID")
+plat <- plat[,1:2]
+
+exp_counts_data <- exp_counts_data %>% 
+  inner_join(plat,by="Ensembl_ID") %>% 
+  dplyr::select(Ensembl_ID,gene,everything()) %>% 
+  dplyr::select(-Ensembl_ID) %>%
+  mutate(rowMean =rowMeans(.[grep("TCGA", names(.))])) %>% # Calculate the average
+  arrange(desc(rowMean)) %>% # Sort the average expression value from high to low
+  distinct(gene,.keep_all = T) %>% # Keep the first gene
+  dplyr::select(-rowMean) %>% # Reverse selection to remove the rowMean column
+  column_to_rownames("gene")
+
+## Filter out low-expression genes, retaining genes that are expressed in at least one sample
+exp_counts_data <- exp_counts_data[apply(exp_counts_data,1, function(x) sum(x>1) > 1),]
+save(exp_counts_data,file = "easyinput/TCGA_BRCA_exp_counts.Rdata")
+
+## Process FPKM data in the same way
+exp_fpkm_data <- data.table::fread(file = "rawdata/TCGA-BRCA.htseq_fpkm.tsv.gz",data.table = F)
+
+exp_fpkm_data <- exp_fpkm_data %>% 
+  inner_join(plat,by="Ensembl_ID") %>% 
+  dplyr::select(Ensembl_ID,gene,everything()) %>% 
+  dplyr::select(-Ensembl_ID) %>%
+  mutate(rowMean =rowMeans(.[grep("TCGA", names(.))])) %>% # Calculate the average
+  arrange(desc(rowMean)) %>% # Sort the average expression value from high to low
+  distinct(gene,.keep_all = T) %>% # Keep the first gene
+  dplyr::select(-rowMean) %>% # Reverse selection to remove the rowMean column
+  column_to_rownames("gene")
+
+## Because the data from UCSC is log2(fpkm+1), you don't need to use fpkm data for difference, you can use log2(fpkm+1) for other analysis, you can not restore, you can also restore,
+## If restored to fpkm, then take log2(fpkm), the value of 0 will become inf
+# fan_log2 <- function(data){
+#    2^data - 1
+#  }
+# exp_fpkm_data <- log2(exp_fpkm_data)
+# exp_fpkm_data <- fan_log2(exp_fpkm_data)
+
+## Filter out low-expression genes, retaining genes that are expressed in at least one sample
+exp_fpkm_data <- exp_fpkm_data[apply(exp_fpkm_data,1, function(x) sum(x>1) > 1),]
+save(exp_fpkm_data,file = "easyinput/TCGA_BRCA_exp_fpkm.Rdata") 
+```
+
+
+# 2 Clinical information preprocessing
+```{r}
+##First read the clinical grouping data
+phenotype <- data.table::fread(file = "rawdata/TCGA-BRCA.GDC_phenotype.tsv.gz",data.table = F)
+
+# Here you need to manually filter out the required clinical information
+BRCA_clic <- phenotype %>% 
+  dplyr::select(submitter_id.samples, age_at_initial_pathologic_diagnosis, history_of_neoadjuvant_treatment, pathologic_T, pathologic_N,pathologic_M, gender.demographic, race.demographic, tumor_stage.diagnoses) %>% 
+  rename(age = age_at_initial_pathologic_diagnosis, neoadjuvant_treatment = history_of_neoadjuvant_treatment, gender = gender.demographic, race = race.demographic, stage = tumor_stage.diagnoses) %>% 
+  filter(pathologic_N == "N0" | pathologic_N == "N1" | pathologic_N == "N1a" | pathologic_N == "N1b" | pathologic_N == "N1c" |  pathologic_N == "N2" | pathologic_N == "N2a" | pathologic_N == "N2b") %>% 
+  filter(pathologic_M == "M0" | pathologic_M == "M1" | pathologic_M == "M1a" | pathologic_M == "M1b") %>% 
+  filter(stage == "stage i" | stage == "stage ia" | stage == "stage ii" | stage == "stage iia" | stage == "stage iib" | stage == "stage iic" | stage == "stage iii" | stage == "stage iiia" | stage == "stage iiib" | stage == "stage iiic" | stage == "stage iv" | stage == "stage iva" | stage == "stage ivb")
+  
+rownames(BRCA_clic) =  BRCA_clic$submitter_id.samples
+BRCA_clic <- BRCA_clic[,-1]
+write.csv(BRCA_clic,"output/TCGA_BRCA_clic_before.csv",row.names = T)
+BRCA_clic <- read.csv("output/TCGA_BRCA_clic_after.csv",header = T,row.names = 1)
+save(BRCA_clic,file = "easyinput/TCGA_BRCA_clic.Rdata")
+
+metadata <- data.frame(TCGA_id=phenotype$submitter_id.samples) 
+##Create grouping
+for (i in 1:nrow(metadata)) {
+  ## Indication
+  #i=1
+  print(i)
+  ## Usage of substring, this is element fetching
+  num = as.numeric(substring(metadata[i,1],14,15))
+  #If it is a tumor, add "Tumor" to the second column
+  if (num %in% seq(1,9)) {
+    metadata[i,2] = "Tumor"
+  } 
+  #If it is normal tissue, add "Normal" to the second column
+  if (num %in% seq(10,29)) {
+    metadata[i,2] = "Normal"
+  } 
+}
+colnames(metadata) <- c("TCGA_id","sample")
+table(metadata$sample)
+#Extract expression spectrum
+str(metadata$TCGA_id)
+table(metadata$TCGA_id %in% colnames(exp_counts_data))
+
+exp_counts_data <- as.data.frame(t(exp_counts_data))
+
+exp_counts_data <- exp_counts_data %>% 
+  rownames_to_column("TCGA_id") %>% 
+  inner_join(metadata,by = "TCGA_id") %>% 
+  dplyr::select(TCGA_id,sample,everything()) %>% 
+  arrange(sample) ##Arrange samples according to grouping 
+
+metadata <- exp_counts_data[,1:2]
+table(metadata$sample)
+
+exp_counts_data <- exp_counts_data %>% 
+  dplyr::select(-sample) %>% 
+  column_to_rownames("TCGA_id")
+
+exp_counts_data <- as.data.frame(t(exp_counts_data))
+
+##Check the sample order
+identical(colnames(exp_counts_data),metadata$TCGA_id)
+
+exp_counts_data <- exp_counts_data %>%
+  rownames_to_column("TCGA_id")
+##Finally, it is 11 normal vs 162 tumors with expression spectrum and clinical information of esophageal cancer
+
+## Differential analysis
+metadata$sample <- factor(metadata$sample,levels = c("Normal","Tumor"),ordered = F)
+save(metadata,file = "easyinput/TCGA_BRCA_group.Rdata") #Save the grouping file
+```
+
+
+# 3 Combine survival data, clinical phenotype data, and expression data
+```{r}
+library(dplyr)
+rm(list = ls())
+
+survival_data <- data.table::fread(file = "rawdata/TCGA-BRCA.survival.tsv",data.table = F)
+rownames(survival_data) <- survival_data$sample
+survival_data <- survival_data %>% 
+  dplyr::select(OS,OS.time)
+save(survival_data,file = "easyinput/TCGA_BRCA_surv.Rdata")
+
+# Extract clinical data
+load(file = "easyinput/TCGA_BRCA_exp_counts.Rdata") #Use counts data
+load(file = "easyinput/TCGA_BRCA_clic.Rdata")#The grouping data above
+load(file = "easyinput/TCGA_BRCA_surv.Rdata") #The wilcox test data above
+
+# Intersect survival data, clinical data, and expression matrix
+index <- intersect(rownames(BRCA_clic),intersect(rownames(survival_data),colnames(exp_counts_data)))
+
+survival_data <- survival_data[index,]
+exp_counts_data <- exp_counts_data[,index]
+BRCA_clic <- BRCA_clic[index,]
+
+save(survival_data,exp_counts_data,BRCA_clic,file = "easyinput/TCGA_BRCA_expr_surv_clin.Rdata")
+```
+
+# 4 Load subtype data
+```{r}
+rm(list = ls())
+load(file = "easyinput/TCGA_BRCA_expr_surv_clin.Rdata") #Use counts data
+BRCA_subtype <- data.table::fread(file = "rawdata/TCGA-PAM50-subtype.txt",data.table = F)
+rownames(BRCA_subtype) <- BRCA_subtype$TCGA_id
+
+# Extract expression matrix, clinical data, and survival data for each subtype
+# table(BRCA_subtype$subtype)
+
+BRCA_Basal <- BRCA_subtype %>% 
+  filter(subtype == "Basal")
+index_Basal <- intersect(rownames(BRCA_Basal),rownames(survival_data))
+BRCA_Basal_expr <- exp_counts_data[,index_Basal]
+BRCA_Basal_surv <- survival_data[index_Basal,]
+BRCA_Basal_BRCA_clic <- BRCA_clic[index_Basal,]
+save(BRCA_Basal_expr,BRCA_Basal_surv,BRCA_Basal_BRCA_clic,file = "easyinput/TCGA_BRCA_Basal_expr_surv_clic.Rdata")
+
+
+BRCA_Her2 <- BRCA_subtype %>% 
+  filter(subtype == "Her2")
+index_Her2 <- intersect(rownames(BRCA_Her2),rownames(survival_data))
+BRCA_Her2_expr <- exp_counts_data[,index_Her2]
+BRCA_Her2_surv <- survival_data[index_Her2,]
+BRCA_Her2_BRCA_clic <- BRCA_clic[index_Her2,]
+save(BRCA_Her2_expr,BRCA_Her2_surv,BRCA_Her2_BRCA_clic,file = "easyinput/TCGA_BRCA_Her2_expr_surv_clic.Rdata")
+
+
+BRCA_LumA <- BRCA_subtype %>% 
+  filter(subtype == "LumA")
+index_LumA <- intersect(rownames(BRCA_LumA),rownames(survival_data))
+BRCA_LumA_expr <- exp_counts_data[,index_LumA]
+BRCA_LumA_surv <- survival_data[index_LumA,]
+BRCA_LumA_BRCA_clic <- BRCA_clic[index_LumA,]
+save(BRCA_LumA_expr,BRCA_LumA_surv,BRCA_LumA_BRCA_clic,file = "easyinput/TCGA_BRCA_LumA_expr_surv_clic.Rdata")
+
+
+BRCA_LumB <- BRCA_subtype %>% 
+  filter(subtype == "LumB")
+index_LumB <- intersect(rownames(BRCA_LumB),rownames(survival_data))
+BRCA_LumB_expr <- exp_counts_data[,index_LumB]
+BRCA_LumB_surv <- survival_data[index_LumB,]
+BRCA_LumB_BRCA_clic <- BRCA_clic[index_LumB,]
+save(BRCA_LumB_expr,BRCA_LumB_surv,BRCA_LumB_BRCA_clic,file = "easyinput/TCGA_BRCA_LumB_expr_surv_clic.Rdata")
+```
+
+
+## Loop, Wilcoxon test, batch comparison of tens of thousands of genes in normal vs tumor expression differences
+```{r}
+rm(list = ls())
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+load(file = "easyinput/TCGA_BRCA_exp_counts.Rdata") 
+load(file = "easyinput/TCGA_BRCA_group.Rdata")
+colnames(metadata)[2] <- c("group")
+
+index <- as.character(metadata$TCGA_id)
+exp_counts_data <- exp_counts_data[,index]
+identical(colnames(exp_counts_data),metadata$TCGA_id)
+
+data <- as.data.frame(t(exp_counts_data))
+data <- data %>% 
+  rownames_to_column("TCGA_id") %>% 
+  inner_join(metadata,by = "TCGA_id") %>% 
+  dplyr::select(TCGA_id,group,everything())
+test <- data[1:10,1:10]
+
+#Plot
+library(ggpubr)
+ggboxplot(
+  data, x = "group", y = "HDAC1",
+  color = "group", palette = c("#00AFBB", "#E7B800"),
+  add = "jitter")+
+  stat_compare_means(method = "wilcox.test")
+
+save(data, file = "easyinput/TCGA_BRCA_wilcox_input.Rdata")
+
+library(future.apply)
+plan(multisession,workers=4)
+options(future.globals.maxSize = 8000 * 1024^2)
+
+##Write in one step, loop for all genes, when you run it yourself, change the F in if (F) to T
+if (T) {
+  wilcox_data <- do.call(rbind,future_lapply(colnames(data)[-c(1:2)],function(x){
+    dd <- wilcox.test(data[,x] ~ group, data = data)
+    data.frame(gene=x,p.value=dd$p.value)
+  }))
+  save(wilcox_data,file = "easyinput/TCGA_BRCA_wilcox_output.Rdata")
+}
+load(file = "easyinput/TCGA_BRCA_wilcox_output.Rdata")
+write.csv(wilcox_data,"output/TCGA_BRCA_wilcox_output.csv",row.names = F)
+##Pick out the significant p values
+wilcox_data_P <- wilcox_data %>% 
+  filter(p.value < 0.05) %>% 
+  arrange(p.value) #Sort by p value
+dim(wilcox_data_P)
+```
+
+## Continue to plot and batch output
+```{r}
+## Plotting
+colnames(data) <- gsub("-","_",colnames(data))
+wilcox_data_P$gene <- gsub("-","_",wilcox_data_P$gene)
+
+myboxplot <- function(gene){
+  ggboxplot(
+    data, x = "group", y = gene,
+    color = "group", palette = c("#00AFBB", "#E7B800"),
+    add = "jitter"
+  )+
+    stat_compare_means(method = "wilcox.test")
+}
+
+## Batch output
+dir.create("output/wilcox_output")
+
+
+datasub <- intersect(colnames(data),wilcox_data_P$gene[1:100])
+datasub <- c(as.character(datasub))
+             
+for (i in 1:length(datasub)){
+  ## 1. Indication
+  #i=1
+  print(i)
+  ## 2. Calculation
+  inputgene = datasub[i]
+  p = myboxplot(inputgene)
+  ggsave(p,filename = paste0("output/wilcox_output/",inputgene,".pdf"), width = 12, height = 9)
+  }
+
+
+## Batch output of genes of interest
+dir.create("output/mygene_output")
+mygene <- read.table("easyinput/easy_input_gene.txt", header = T)
+mygene$SYMBOL <- gsub("-","_",mygene$SYMBOL)
+#mygene[which(mygene$SYMBOL == "IL28A"),"SYMBOL"] <- "IFNL2" #
+mygene <- intersect(colnames(data),mygene$SYMBOL)
+datasub <- c(as.character(mygene))
+for (i in 1:length(datasub)){
+  ## 1. Indication
+  #i=1
+  print(i)
+  ## 2. Calculation
+  inputgene = datasub[i]
+  p = myboxplot(inputgene)
+  ggsave(p,filename = paste0("output/mygene_output/",inputgene,".pdf"), width = 12, height = 9)
+}
+
+
+## Batch output of genes of interest (group plot)
+library(cowplot)
+##Similarly, the above can be written as a function
+datasub <- c(as.character(mygene))
+#Can also be written as a function
+gene.boxplot <- function(datasub){
+  your_plot <- list()
+  for (j in 1:length(datasub)) {
+    # Plotting
+    p <- ggboxplot(
+      data, x = "group", y = datasub[j],
+      color = "group", palette = c("#00AFBB", "#E7B800"),
+      add = "jitter"
+    )+
+      stat_compare_means(method = "wilcox.test")
+    # Save in list
+    your_plot[[j]] <- p
+  }
+
+  for (i in seq(10,length(datasub),10)) {
+    print(i)
+    ##Split start position
+    beginning <- i - 10
+    ##1、Split your_plot
+    all_list <- your_plot[beginning:i]
+    # 2、Combine plots, and add ABCD labels
+    all_plot <- plot_grid(plotlist = all_list,ncol = 4 ,labels = LETTERS[1:11],align = "hv") ##Put 3 plots in a row, each small plot is set to 4 high and 4 wide
+    # 3、Save image
+    ggsave(all_plot,
+           filename = paste0("output/mygene_output/",beginning," to ",i,".pdf"),
+           width = 12,
+           height = 12)
+  }
+}
+##Test function features
+gene.boxplot(datasub)
+```
+
+
+# 4 批量生存分析
+```{r}
+rm(list = ls())
+load(file = "easyinput/TCGA_BRCA_Basal_expr_surv_clic.Rdata")
+
+#转置
+data_expr <- as.data.frame(t(BRCA_Basal_expr))
+data <- cbind(data_expr,BRCA_Basal_BRCA_clic,BRCA_Basal_surv)
+data$OS.time <- round(data$OS.time/30,2) #时间转为月份
+save(data, file ="easyinput/TCGA_BRCA_Basal_expr&surv&clic.Rdata")
+
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(dplyr)
+library(tidyverse)
+load(file = "easyinput/TCGA_BRCA_Basal_expr&surv&clic.Rdata")
+
+data <- data %>% 
+  dplyr::select(OS,OS.time,1:54558)
+
+##处理一下，不然会报错
+colnames(data) <- gsub("-","_",colnames(data))
+colnames(data) <- gsub("5S_rRNA","rRNA5S",colnames(data))
+genes <- colnames(data)[-c(1:2)]
+
+# 这里可以输入自己感兴趣的基因
+mygene <- read.table("easyinput/easy_input_gene.txt", header = T)
+#mygene[which(mygene$SYMBOL == "IL28A"),"SYMBOL"] <- "IFNL2" #
+mygene <- as.character(intersect(genes,mygene$SYMBOL))
+genes <- mygene
+
+
+library(survival)
+library(future.apply)
+plan(multisession,workers=4)
+options(future.globals.maxSize = 8000 * 1024^2)
+
+##一步到位写成，就是
+system.time(if (T) {
+  cox_data <- do.call(rbind,future_lapply(genes,data=data,function(genes,data){
+    surv =as.formula(paste('Surv(OS.time, OS)~', genes))
+    x = coxph(surv, data = data)
+    x = summary(x)
+    p.value=signif(x$wald["pvalue"], digits=2)
+    HR =signif(x$coef[2], digits=2);#exp(beta)
+    HR.confint.lower = signif(x$conf.int[,"lower .95"], 2)
+    HR.confint.upper = signif(x$conf.int[,"upper .95"],2)
+    CI <- paste0("(", 
+                 HR.confint.lower, "-", HR.confint.upper, ")")
+    data.frame(ID=genes,HR=HR,CI_95=CI,p.value=p.value)
+  }))
+  row.names(cox_data) <- cox_data[,1]
+  cox_data <- cox_data %>% 
+    filter(p.value < 1) #选出P值有意义的,同样是524个
+  save(cox_data,file = "easyinput/TCGA_BRCA_Basal_cox_output.Rdata")
+})
+load(file = "easyinput/TCGA_BRCA_Basal_cox_output.Rdata")
+
+
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(survival)
+library(survminer)
+library(dplyr)
+library(tidyverse)
+load(file = "easyinput/TCGA_BRCA_Basal_cox_output.Rdata")
+load(file = "easyinput/TCGA_BRCA_Basal_expr&surv&clic.Rdata")
+colnames(data) <- gsub("-","_",colnames(data))
+colnames(data) <- gsub("5S_rRNA","rRNA5S",colnames(data))
+table(cox_data$ID %in% colnames(data))
+str(cox_data)
+cox_data$ID <- as.character(cox_data$ID)
+index <- cox_data$ID
+sur_data <- data[,index]
+data <- data %>% 
+  dplyr::select(OS,OS.time,1:54558)
+sur_data <- cbind(data[,1:2],sur_data)
+
+res.cut <- surv_cutpoint(sur_data, time = "OS.time",
+                         event = "OS",
+                         variables = names(sur_data)[3:ncol(sur_data)],
+                         minprop = F)
+res.cat <- surv_categorize(res.cut)
+
+
+##1. Write function
+genes <- colnames(res.cat)[-c(1:2)]
+#genes <- colnames(sur_data)[-c(1:2)] #Also possible, the same
+
+your.surv <- Surv(res.cat$OS.time, res.cat$OS) ##Must be placed outside the function or loop, otherwise the following error will be reported
+# Error in eval(inp, data, env) : object 'your.surv' not found
+# Timing stopped at: 0.58 0.22 3.25
+
+your.km.plot <- function(genes,data){
+  group <- res.cat[,genes] #Grouping
+  survival_dat <- data.frame(group = group)
+  #In order not to reverse the color and grouping of the survival plot below, factorize the grouping order
+  group <- factor(group, levels = c("low", "high")) 
+  fit <- survfit(your.surv ~ group)
+  # log-rank test：pvalue
+  # This function implements the G-rho family of Harrington and Fleming (1982), with weights on each death of S(t)^rho, where S is the Kaplan-Meier estimate of survival. 
+  # With rho = 0 this is the log-rank or Mantel-Haenszel test, and with rho = 1 it is equivalent to the Peto & Peto modification of the Gehan-Wilcoxon test.
+  sdf <- survdiff(your.surv ~ group,rho=0)
+  p.val <- 1 - pchisq(sdf$chisq, length(sdf$n)-1)
+  p.val
+  photo2 <-  ggsurvplot(fit,data = survival_dat, #This is very important, otherwise an error will be reported
+                        legend.title = genes,#Define the name of the legend
+                        legend.labs = c("low","high"), #So the grouping order needs to be factorized above
+                        #legend = "top",#Position of the legend
+                        pval = T, #Add the p-value of the log rank test to the plot
+                        #pval.method = TRUE,#Add the test method of p-value
+                        #conf.int = TRUE,#Add confidence interval
+                        risk.table = F, #Add a risk table below the plot
+                        #risk.table.col = "strata", #Add color to the risk table according to data grouping
+                        risk.table.y.text = F,#Whether to show the name of the group on the Y-axis of the risk table, F is to show the group with lines
+                        #linetype = "strata", #Change the line type of the survival curve of different groups
+                        #surv.median.line = "hv", #Mark the median survival time
+                        xlab = "Time in years", #Title of the x-axis
+                        xlim = c(0,max(res.cat$OS.time)), #Display range of the x-axis
+                        break.time.by = 10, #Interval of the x-axis
+                        size = 1.5, #Line size
+                        #ggtheme = theme_bw(), #Add grid to the plot
+                        palette = c("#00BFFF","#DAA520")#Color style of the plot
+  ) 
+
+  # photo2  #Take a look at the plot
+  # Modify the legend
+  # Modify the legend name of the risk table 
+  # photo2$table <- photo2$table + labs(title = "Number at risk")
+  # Changing the font size, style and color of photo2
+  # survival curves, risk table
+  # photo2 <- ggpar(
+  #   photo2,
+  #   font.title= c(16, "bold", "darkblue"),#16 font size, bold, darkblue color
+  #   font.x = c(14, "bold.italic", "red"),#14 font size, bold italic, red
+  #   font.y = c(14, "bold.italic", "darkred"), #14 font size, bold italic, darkred
+  #   font.xtickslab = c(12, "plain", "darkgreen"),#Adjust the font size, color and style on the X-axis
+  #   legend = "top" #Position of the legend
+  # )
+  # photo2  #Take a look at the plot again
+}
+
+
+###4.future_lapply
+library(ggplot2)
+library(future.apply)
+plan(multisession)
+system.time(lapplylist <- future_lapply(genes,your.km.plot,data = res.cat))
+#用户 系统 流逝 
+#1.42 0.27 7.29 
+
+##批量输出图
+dir.create("output/surv_output")
+
+library(patchwork)
+## 批量导出
+datasub <- c(as.character(genes))
+for (i in 1:length(datasub)){
+  ## 1.指示
+  #i=1
+  print(i)
+  ## 2.计算
+  inputgene = datasub[i]
+  p = your.km.plot(inputgene,data = res.cat)
+  library(patchwork)
+  #为了把生存曲线与曲线下的风险表画在一起
+  # patchwork <- (p$plot/p$table) + plot_layout(nrow =2, heights = c(6, 1)) #生存曲线高度6成,table表2成
+  # patchwork
+  ggsave(plot = patchwork,filename = paste0("output/surv_output/",inputgene,".pdf"), width = 8, height = 8)
+}
+
+# 还可以把多张生存曲线图打印在同一张figure上
+
+library(future.apply)
+plan(multisession)
+system.time(lapplylist <- future_lapply(genes,your.km.plot,data = res.cat))
+datasub <- c(as.character(genes))
+library(cowplot)
+for (i in seq(10,length(datasub),10)) {
+  print(i)
+  ##切分起始位置
+  beginning <- i - 9
+  ##1.切分your_plot
+  all_list <- lapplylist[beginning:i]
+  ##2.拼图，并且加上ABCD等标签
+  all_plot <- arrange_ggsurvplots(all_list,print = F,ncol = 4, nrow = 3,
+                                  risk.table.height = 0.3,
+                                  surv.plot.height = 0.7)
+  ##3.批量输出和保存
+  ggsave(all_plot,
+         filename = paste0("output/surv_output/",beginning," to ",i,".pdf"),
+         width = 18,
+         height = 18)
+}
+```
+
+
+# 5 条件生存曲线
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+#library(condsurv) # 本代码使用的函数为该函数包中gg_conditional_surv的修改版
+library(survival)
+library(tidyverse)
+library(survminer)
+library(ggpubr)
+library(patchwork)
+source("scripts/conditional_survival.R")
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+
+## 输入文件
+easy_input.csv，生存数据，至少包含两列，生存时间（futime，年为单位）和生存状态（fustat）。
+```{r}
+load(file = "easyinput/TCGA_BRCA_expr_surv_clic.Rdata")
+dat <- survival_data %>% 
+  rename(futime = OS.time,fustat = OS) 
+dat$futime <- dat$futime/365  # 注意将生存时间转换为年
+max(dat$futime)
+
+# 设置最长希望观测的生存时间点（条件概率的最大生存时间，如5年）
+max.condsurv <- 15
+
+# 自定义颜色
+mycol<-read.table("rawdata/figure_colors.txt")#此处使用Figure 2的颜色
+mycol<-as.character(mycol$V1)
+
+# 第一幅
+# 调用函数画图，同时输出生存概率表
+p1 <- plot_condsurv(survdt = dat,
+                   at = 0:max.condsurv,
+                   surv.cut = 16,
+                   curv.col = mycol,
+                   legend.pos = "top")
+
+# 第二幅
+# 把条件生存概率表画成图
+myfit <- p1$basekm 
+cond <- p1$cond
+prob_times <- p1$prob_time
+data <- do.call(rbind,lapply(cond, con_prob))
+data$years <- as.factor(data$years)
+p2 <- ggplot(data = data, aes(x=years,y=con,label=label))+
+        ggpubr::geom_exec(geom_text, data = data, size = 5, color = "con")+
+        scale_y_reverse()+theme_classic()+
+        theme(legend.position = "none",
+           axis.text.x = element_text(size=15),
+           axis.text.y = element_text(size=15),
+           axis.title = element_text(size=15))+
+        xlab("Survival probability to reach X years")+
+        ylab("Given years of survival") +
+        scale_color_gradientn(colours = mycol) #颜色跟第一幅图一致
+
+# 第三幅
+n <- ggrisktable(myfit, break.time.by=1, data = dat)
+m <- n$data[(min(prob_times)+1):(max(prob_times)+1),]
+m$time <- as.factor(m$time)
+# 把风险表输出到文件
+risk <- t(data.frame(risk = m$n.risk))
+colnames(risk) <- m$time
+write.csv(risk, "output/number_at_risk.csv", quote = F)
+# 把风险表画成图
+p3 <- ggplot(data = m, aes(x=time, y=strata, label=n.risk)) +
+  ggpubr::geom_exec(geom_text, data = m, size = 5, color = "black") +
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size=15),
+        axis.text.y = element_text(size=15),
+        axis.title = element_text(size=15)) +
+  ylab("Number at risk") + 
+  xlab("Years")
+
+condsurv_plot <- p1$condsurvcurve + p2 + p3 + 
+  plot_layout(ncol = 1, heights = c(5,5,1))
+condsurv_plot
+ggsave("figures/BRCA_conditional_survival.pdf", width = 10, height = 14)
+```
+
+
+# 6 感兴趣基因之间的相关性分析
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(circlize)
+library(ggsci)
+library(parallel)
+source("scripts/genecor_circleplot.R")
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+
+load(file = "easyinput/TCGA_BRCA_expr_surv_clic.Rdata")
+mygenes <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
+genes <- c(mygenes, "PDCD1") # 我们这里观察一下与PD-1的表达相关性
+inputtemp <- as.data.frame(t(exp_counts_data[genes,]))
+inputtemp <- na.omit(inputtemp)
+
+
+# 计算相关系数
+genecorl <- lapply(colnames(inputtemp),function(x){
+  ddd <- genecor.parallel(data = t(inputtemp), cl=2, gene=x) #一定要注意cl参数根据自己电脑cpu线程调整
+  ddd  
+})
+genecor <- do.call(rbind, genecorl)
+
+# 删掉cor = 1的，也就是自己跟自己配对
+genecorr <- genecor[-which(genecor$cor==1),]
+
+# 删掉A vs B 和 B vs A其中一个
+genecorrr<-genecorr[!duplicated(genecorr$cor),]
+
+# 保存到文件
+genecorrr$p.value <- NULL
+write.table(genecorrr,"output/BRCA_mygene_genecor_circleplot.txt", sep = "\t", quote = F, row.names = F)
+
+
+# 开始画图
+genecorrr <- read.table("output/BRCA_mygene_genecor_circleplot.txt", header = TRUE, sep = "\t",as.is = T)
+genecor_circleplot(genecorrr)
+
+# 输出到PDF文件
+pdf("figures/BRCA_mygene_correlation.pdf", width = 5, height = 5)
+genecor_circleplot(genecorrr)
+dev.off()
+```
+
+
+# 7 感兴趣基因列表的突变分析
+```{r}
+Srm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(TCGAbiolinks)
+library(maftools)
+library(dplyr)
+library(tidyverse)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+## 输入文件下载
+```{r,message=FALSE}
+# 查看癌症项目名缩写
+cancerName <- data.frame(id = TCGAbiolinks:::getGDCprojects()$project_id, name = TCGAbiolinks:::getGDCprojects()$name)
+head(cancerName)
+
+## 下载临床信息
+brca.clinical <- GDCquery(project = "TCGA-BRCA", data.category = "Clinical", file.type = "xml")
+GDCdownload(brca.clinical, method = "api", files.per.chunk = 6)
+brca.clin <- GDCprepare_clinic(brca.clinical, clinical.info = "patient")
+colnames(brca.clin)[1] <- "Tumor_Sample_Barcode"
+# 用View查看临床数据里有哪些项，不同癌症不一样，每个人感兴趣的性状也不同，根据自己的需要来选择感兴趣的列
+# 理论上，每一列都可以作为分类信息画出来。
+View(brca.clin)
+
+## 下载突变数据
+## 4种找mutation的pipeline任选其一：`muse`, `varscan2`, `somaticsniper`, `mutect2`，此处选mutect2。
+query <-  GDCquery(project = "TCGA-BRCA", data.category = "Simple Nucleotide Variation", data.type = "Masked Somatic Mutation", legacy=F)
+GDCdownload(query, directory = "maf", method = "api", files.per.chunk = 6)
+brca.maf <- GDCprepare(query, directory = "maf")
+
+brca = read.maf(maf = brca.maf, clinicalData = brca.clin)
+save(brca,file = "easyinput/TCGA_BRCA_maf_clin.Rdata")
+load(file = "easyinput/TCGA_BRCA_maf_clin.Rdata")
+# 提取感兴趣基因的突变数据
+colnames(mut)
+head(mut)
+Gene_Mutation <- mut[,c(1,9,10,16)]
+write.csv(Gene_Mutation,"Gene_Mutation.csv")
+TP53_Mutation <- Gene_Mutation[Gene_Mutation$Hugo_Symbol=="TP53",]
+write.csv(TP53_Mutation,"TP53_Mutation.csv")
+maf <- read.maf(maf = maf, clinicalData = cliquery, isTCGA = T)
+
+# Plotting MAF summary.
+pdf("figures/brca_maf_summary.pdf",width = 15,height = 10)
+plotmafSummary(maf = brca, rmOutlier = TRUE, addStat = 'median', dashboard = TRUE, titvRaw = FALSE)
+dev.off()
+
+# Oncoplots
+pdf("figures/brca_oncoplotTop20.pdf",width = 15,height = 10)
+oncoplot(maf = brca,
+         top = 20,
+         clinicalFeatures = c("race_list", "radiation_therapy", "gender"))
+dev.off()
+
+## 指定基因
+mygene <- read.table("easyinput/easy_input_gene.txt",header = T)$SYMBOL
+
+pdf("figures/BRCA_mygene_oncoplot.pdf",width = 12,height = 10)
+oncoplot(maf = brca,
+         genes = mygene)
+dev.off()
+
+# Transition and Transversions.
+brca.titv = titv(maf = brca, plot = FALSE, useSyn = TRUE)
+#plot titv summary
+pdf("figures/brca_titv_summary.pdf",width = 12,height = 6)
+plotTiTv(res = brca.titv)
+dev.off()
+
+
+# Lollipop plots for amino acid changes
+pdf("figures/brca_ATP7A_Lollipop.pdf",width = 12,height = 6)
+lollipopPlot(maf = brca, gene = 'ATP7A', AACol = 'Protein_position', showMutationRate = TRUE, labelPos = 882)
+dev.off()
+
+
+# Rainfall plots
+pdf("figures/brca_Rainfall.pdf",width = 12,height = 6)
+rainfallPlot(maf = brca, detectChangePoints = TRUE, pointSize = 0.4)
+dev.off()
+
+# Compare mutation load against TCGA cohorts
+pdf("figures/brca_TMB.pdf",width = 12,height = 6)
+brca.mutload = tcgaCompare(maf = brca, cohortName = 'BRCA', logscale = TRUE, capture_size = 50)
+dev.off()
+
+# Plotting VAF
+pdf("figures/brca_VAF.pdf",width = 12,height = 6)
+plotVaf(maf = brca)
+dev.off()
+
+# Mutation in any given genes
+pdf("figures/brca_GZMA_mafSurvival.pdf",width = 12,height = 6)
+mafSurvival(maf = brca, genes = 'GZMA', time = 'days_to_last_followup', Status = 'Overall_Survival_Status', isTCGA = TRUE)
+dev.off()
+```
+
+
+
+# 下面就可以进入signature的分析流程了
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(data.table)
+library(GSVA)
+library(ggplot2)
+library(reshape2)
+library(dplyr)
+load(file = "easyinput/TCGA_BRCA_expr_surv_clic.Rdata")
+expr <- exp_counts_data
+genelist <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
+es <- gsva(expr = as.matrix(expr),
+           gset.idx.list = list("genelist" = genelist),
+           method = "ssgsea",
+           parallel.sz = 0)
+BRCA_surv_risk_clinc <- cbind(survival_data,t(es),BRCA_clic)
+BRCA_surv_risk_clinc <- BRCA_surv_risk_clinc %>% 
+  rename(riskscore = genelist)
+BRCA_surv_risk_clinc_expr <- cbind(BRCA_surv_risk_clinc,t(expr))
+save(expr,BRCA_surv_risk_clinc,BRCA_surv_risk_clinc_expr,file = "easyinput/TCGA_BRCA_signature_easyinput.Rdata")
+
+
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library("survival")
+library("glmnet")
+library("pbapply")
+library("survivalROC")
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+```
+
+### 自定义函数
+```{r}
+# 显示进程
+display.progress = function (index, totalN, breakN=20) {
+  
+  if ( index %% ceiling(totalN/breakN)  ==0  ) {
+    cat(paste(round(index*100/totalN), "% ", sep=""))
+  }
+  
+}    
+
+# lasso回归
+surv_lasso <- function(iter.times = NULL, surv.obj = NULL, expr.obj = NULL, nfolds = 10, alpha = 1, family = "cox") {
+  # iter.times: pblapply的传入参数，用于迭代次数
+  # surv.obj: surv对象，由Surv()函数得到；
+  # expr.obj: 表达谱对象，注意行为特征，列为样本
+  # nfolds：筛选最优lambda时的交叉验证次数，默认为10
+  # alpha： 默认为1表示LASSO回归
+  # family： 默认为"cox"
+
+  cvfit = cv.glmnet(x = t(as.matrix(expr.obj)), 
+                    y = surv.obj, 
+                    nfolds = nfolds, # 10-fold交叉验证选取最优lambda
+                    alpha = alpha, # alpha = 1 意味着 lasso
+                    family = family) # 依赖cox模型
+  
+  # 取出最优lambda
+  myCoefs <- coef(cvfit, s="lambda.min");
+  lasso_fea <- myCoefs@Dimnames[[1]][which(myCoefs != 0 )] # 取出非0的特征
+  
+  return(lasso_fea)
+}
+```
+
+```{r}
+#读取表达矩阵
+load(file = "easyinput/TCGA_BRCA_Basal_expr_surv_clic.Rdata")
+expr <- BRCA_Basal_expr
+Sinfo <- BRCA_Basal_surv
+
+# 产生最终数据
+expr <- expr[,com_sam]
+Sinfo <- Sinfo[com_sam,]
+
+# 过滤出方差>var.cutoff的基因
+# 参数设置
+var.cutoff <- 0.2 # 例文为GEO数据，阈值设为0.2
+var <- apply(expr, 1, sd)
+expr.filtered <- expr[var > var.cutoff,] # 因为这里是TCGA数据，所以我设置的大一些
+
+## 筛选基因
+# 过滤出与OS有关的基因
+cox.cutoff <- 0.1 # 例文阈值设为0.5
+Coxoutput.OS <- NULL
+for (i in 1:nrow(expr.filtered)) {
+  display.progress(index = i,totalN = nrow(expr.filtered)) # 显示进度
+  
+  # 产生临时变量存储生存以及变量表达值
+  tmp <- data.frame(gene = as.numeric(expr.filtered[i,]),
+                    OS.time = Sinfo[,"OS.time"],
+                    OS = Sinfo[,"OS"],
+                    stringsAsFactors = F)
+  
+  # 单变量cox比例风险模型
+  cox <- coxph(Surv(OS.time, OS) ~ gene, data = tmp)
+  coxSummary = summary(cox)
+  
+  # 生成cox结果数据框，包括基因名，风险比，z值，waldtest p值，以及HR置信区间
+  Coxoutput.OS=rbind.data.frame(Coxoutput.OS,data.frame(gene=rownames(expr.filtered)[i],
+                                                        HR=as.numeric(coxSummary$coefficients[,"exp(coef)"]),
+                                                        z=as.numeric(coxSummary$coefficients[,"z"]),
+                                                        pvalue=as.numeric(coxSummary$coefficients[,"Pr(>|z|)"]),
+                                                        lower=as.numeric(coxSummary$conf.int[,3]),
+                                                        upper=as.numeric(coxSummary$conf.int[,4]),
+                                                        stringsAsFactors = F),
+                                stringsAsFactors = F)
+}
+write.table(Coxoutput.OS,"output/Coxoutput.OS.txt",sep = "\t",row.names = F,quote = F)
+
+### 根据cox.cutoff筛选基因
+if(!identical(rownames(expr.filtered),Coxoutput.OS$gene)) {stop("Error! Gene name is mismatched!\n")}
+surv.expr <- expr.filtered[Coxoutput.OS$pvalue < cox.cutoff,]
+dim(surv.expr)
+mygene <- read.table("easyinput/easy_input_gene.txt", header = T)
+#mygene[which(mygene$SYMBOL == "IL28A"),"SYMBOL"] <- "IFNL2" #
+mygene <- as.character(intersect(rownames(surv.expr),mygene$SYMBOL))
+
+surv.expr <- surv.expr[mygene,]
+
+#############################
+### 迭代LASSO挑选高频特征 ###
+iter.times <- 1000 # 设置迭代次数，速度非常慢请耐心，例文是1000次
+
+# 运算lasso回归
+lasso_fea <- list
+surv <- Surv(Sinfo$OS.time, Sinfo$OS)
+
+set.seed(111) # 外部设置种子，使得迭代过程是可重复的
+#下面这步运行时间较长，我们把它保存到lasso_fea.rda里
+lasso_fea <- pblapply(1:iter.times,
+                      surv_lasso, 
+                      surv.obj = surv, 
+                      expr.obj = surv.expr)
+save(lasso_fea,file = "easyinput/lasso_fea.Rdata") # 保存该结果
+#这里直接加载上一步运行的结果
+load("easyinput/lasso_fea.Rdata") # 加载该结果
+
+#######################
+### 根据AUC挑选基因 ###
+genes <- sort(table(unlist(lasso_fea)), decreasing = T) # 根据基因出现的频次排序
+# 如果觉得出现次数较少的基因是不鲁棒的，也可以仅选择top基因
+freq.cutoff <- 50 
+genes <- names(genes[genes > freq.cutoff]) # 这里选择出现频次大于50的基因，认为是多次lasso的共识基因
+
+
+pred.time <- 5 # 查看5年ROC
+roc <- list() # 初始化roc列表
+auc <- c() # 初始化auc向量
+
+for (i in 1:length(genes)) {
+  gene <- genes[i]
+  tmp <- data.frame(gene = as.numeric(surv.expr[gene,]),row.names = colnames(surv.expr),stringsAsFactors = F); colnames(tmp) = gene
+  if(i == 1) { # 如果为第一个基因就把生存信息纳入数据框
+    surv.dat <- cbind.data.frame(Sinfo[rownames(tmp),c("OS.time","OS")],tmp)
+  } else {
+    surv.dat <- cbind.data.frame(surv.dat,tmp)
+  }
+  cox <- coxph(Surv(OS.time, OS) ~ ., data = surv.dat) # 多变量cox比例风险模型（i=1时为单变量）
+  riskscore <- predict(cox,type="risk",newdata=surv.dat) # 计算风险
+  roc[[i]] <- survivalROC(Stime=surv.dat$OS.time, 
+                          status=surv.dat$OS, 
+                          marker = riskscore[rownames(surv.dat)], 
+                          predict.time =pred.time*365, # 计算pred.time时刻的ROC，一般是五年生存
+                          method="KM")
+  auc <- c(auc,roc[[i]]$AUC) # 保存auc
+}
+
+#############################
+### 最终signature与KM曲线 ###
+prog.sig <- genes[1:which.max(auc)]
+#保存到文件
+write.table(prog.sig,"signature_gene.txt", row.names = F, quote = F)
+
+surv.dat <- t(surv.expr[prog.sig,])
+surv.dat <- cbind.data.frame(Sinfo[rownames(surv.dat),c("OS.time","OS"),],surv.dat)
+surv.dat$OS.time <- surv.dat$OS.time/365
+cox <- coxph(Surv(OS.time, OS) ~ ., data = surv.dat) # 多变量cox比例风险模型
+riskscore <- predict(cox,type="risk",newdata=surv.dat) # 计算风险
+
+risk.dat <- cbind(surv.dat,riskscore)
+save(rsik.dat,file = "easyinput/TCGA_BRCA_Basal_surv_expr_risk.Rdata")
+
+surv.dat$Risk <- ifelse(riskscore > median(riskscore),"High","Low") # 根据风险值划分高低风险组
+fitd <- survdiff(Surv(OS.time, OS) ~ Risk, data=surv.dat, na.action=na.exclude)
+p.val <- 1-pchisq(fitd$chisq, length(fitd$n)-1) # 计算KM曲线p值
+fit <- survfit(Surv(OS.time, OS)~ Risk, data=surv.dat, type="kaplan-meier", error="greenwood", conf.type="plain", na.action=na.exclude)
+
+### 设置颜色 ###
+red  <- "#E94244"
+blue <- "#4084BB"
+
+pdf("figures/AUCandKM.pdf",width = 10,height = 3)
+par(mfrow = c(1,3))
+# 通过不断纳入基因（根据频次排序的），计算AUC的变化情况
+par(bty="o", mgp = c(2,0.5,0), mar = c(4.1,4.1,2.1,2.1),tcl=-.25, font.main=3)
+plot(1:length(genes), auc, # 画AUC随基因入组的变化情况
+     type = "l", lwd = 2, col = blue,
+     ylim = c(0.6,1), xlab = "Genes ordered by frequency",ylab = "Area under the curve")
+points(which.max(auc), auc[which.max(auc)], pch = 16, cex = 1.5, col = red) # 点出峰值
+arrows(x0 = which.max(auc), y0 = auc[which.max(auc)] - 0.07,
+       x1 = which.max(auc), y1 = auc[which.max(auc)] - 0.02,
+       length = 0.1)
+text(which.max(auc), auc[which.max(auc)] - 0.1,
+     labels = paste0("Number of genes: ",which.max(auc),"\n",
+                     "Current AUC: ",round(auc[which.max(auc)],3)),col = red,adj = 0.55)
+
+# 取AUC峰值时的基因入组情况，作为最终的signature
+par(bty="o", mgp = c(2,0.5,0), mar = c(4.1,4.1,2.1,2.1),tcl=-.25, font.main=3)
+plot(roc[[which.max(auc)]]$FP, roc[[which.max(auc)]]$TP, type="l", xlim=c(0,1), ylim=c(0,1),col=blue, # 画峰值时的ROC
+     xlab="1-Specificity (FPR)", ylab="Sensitivity (TPR)",
+     lwd = 2, cex.main=1.3, cex.lab=1.2, cex.axis=1.2, font=1.2)
+text(0.4,0.7,paste0("AUC = ",round(roc[[which.max(auc)]]$AUC,3)),cex=1,col=blue)
+lines(x=c(0,1),y=c(0,1),lwd=1.5,lty=2,col="grey40")
+
+# 针对最终的signature绘制高低风险KM曲线
+par(bty="n", mgp = c(1.9,.33,0), mar=c(4.1,4.1,2.1,2.1)+.1, las=1, tcl=-.25)
+plot(fit, col = c(red,blue), lwd = 1.2, xlab="Time (Years)", ylab="Overall survival",mark.time = T)
+par(xpd=TRUE)
+legend(x=10, y=1.1, bty="n", "Risk", cex=1, text.font=2)
+legend(x=10, y=1, bty="n", text.col = c(red,blue), c("High","Low"), cex=1)
+text(x=0, y=0.05, paste0("Log-rank P ",ifelse(p.val < 0.001,"< 0.001",paste0("= ",round(p.val,3)))), cex=1, pos=4)
+invisible(dev.off())
+```
+
+
+# risk组合图
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(reshape2)
+library(ggplot2)
+library(scales)
+library(cowplot)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+
+# risk score，用于画顶部散点图
+bestvars <- read.table("easyinput/easy_input_gene.txt", header = T)$SYMBOL
+load(file = "easyinput/TCGA_BRCA_signature_easyinput.Rdata")
+data <- BRCA_surv_risk_clinc_expr
+data$OS.time <- data$OS.time/365 # 转成年份
+rs <- data$riskscore
+names(rs) <- rownames(data)
+rs_data <- data.frame(x=1:length(rs),rs=as.numeric(sort(rs)))
+# 用中值分组
+rs_data$Risk <- ifelse(rs_data$rs>=median(rs_data$rs), "High-risk", "Low-risk")
+head(rs_data)
+
+data_group <- data
+
+
+# follow-up，用于画中间B图
+surv_data <- data.frame(x=1:length(rs),
+                    t=data[names(sort(rs)),'OS.time'],
+                    s=data[names(sort(rs)),'OS']) 
+surv_data$Status <- as.factor(ifelse(surv_data$s==0,'Alive','Death'))
+head(surv_data)
+
+# 提取signature对应的data，并按risk score排序，用于画底部热图
+exp_data <- data[names(sort(rs)),which(colnames(data) %in% bestvars)]
+exp_data[1:2,1:4]
+
+plot.A <- ggplot(rs_data, aes(x=x,y=rs))+
+  geom_point(aes(col=Risk),size=0.5)+
+  scale_color_manual(labels=c("High-risk","Low-risk"), 
+                     #guide_legend(guide = NULL), #如果不想画图例就删掉#
+                     name="Risk score", values =c("#DC0000FF", "#00A087FF")) + 
+  
+  # 画竖向虚线
+  geom_segment(aes(x = sum(rs_data$Risk=="Low-risk"),
+                   y = 0, 
+                   xend = sum(rs_data$Risk=="Low-risk"), 
+                   yend = max(rs_data$rs)), linetype="dashed", size = 0.6)+
+  # 画横线
+  #geom_segment(aes(x=0,y=median(rs_data$rs),
+  #                 xend=nrow(rs_data),
+  #                 yend=median(rs_data$rs)),linetype="dashed", size = 0.3)+
+  
+  # 写文字Cutoff:
+  #geom_text(aes(x=sum(rs_data$Risk=="Low-risk")/2,
+  #              y=median(rs_data$rs)+8,
+  #              label=paste0("Cutoff: ",round(median(rs_data$rs),3))),
+  #          col ="black",size = 4,alpha=0.8)+
+  
+  theme(axis.title.x=element_blank()) +
+  scale_x_continuous(limits = c(0,NA),expand = c(0,0)) +
+  labs(y="Risk score",x="",fill="Risk") +
+  #scale_colour_discrete(name="Risk scores") +
+  theme_classic() +
+  theme(axis.ticks.x=element_blank(),
+        axis.line = element_blank(), #如果想像example2那样画坐标轴，就删掉这行
+        axis.text.x=element_blank())
+
+plot.A
+
+plot.B <- ggplot(surv_data,aes(x=x,y=t))+
+  geom_point(aes(col=Status),size=0.5)+
+  geom_vline(aes(xintercept=sum(rs_data$Risk=="Low-risk")),size=0.6,linetype="dashed")+
+  scale_x_continuous(limits = c(0,NA),expand = c(0,0))+
+  scale_color_manual(labels=c("Alive","Dead"),
+                     values =c("#00A087FF","#DC0000FF"))+
+  labs(y="RFS(months)",x="")+
+  theme_classic()+
+  theme(axis.ticks.x=element_blank(),
+        axis.line = element_blank(), #如果想像example2那样不画坐标轴，就删掉前面的#
+        axis.text.x=element_blank())
+
+plot.B
+
+tmp <- t(scale(exp_data))
+tmp[tmp > 1] = 1
+tmp[tmp < -1] = -1
+reorder_cormat <- function(cormat){
+  dd <- dist(cormat)
+  hc <- hclust(dd,method = "average")
+  cormat <-cormat[hc$order,]
+}
+tmp1 <- reorder_cormat(tmp)
+tmp1 <- rbind(tmp1,ifelse(rs_data$Risk=="Low-risk",-1.5,1.5))
+tmp.m <- melt(tmp1)
+
+p2 <-ggplot(tmp.m, aes(Var2, Var1),size=0.5) + 
+  geom_tile(aes(fill = value)) 
+
+plot.C <- p2 + scale_fill_gradient2(name="Genes\nexpression", low="#00A087FF", high="#DC0000FF", mid="white") +
+  labs(x = "", y = "")+
+  theme_classic()+
+  theme(legend.title = element_text(size = 12), legend.position = "right",
+        axis.line = element_blank(),
+        axis.ticks=element_blank(),
+        axis.text.x=element_blank())
+
+plot.C
+
+plot_grid(plot.A, plot.B, plot.C,
+          labels = c("B", "",""), # 或者按顺序标注ABC
+          rel_heights = c(1,1,1), # 3个图的比例
+          #label_x=0,
+          #label_y=1,
+          align = 'v',ncol = 1, axis="lr", scale = c(1,1,1), greedy = F)
+
+# 保存到文件
+ggsave("figures/signature_cox.pdf", width = 7, height = 9)
+```
+
+
+# 列线图nomogram，诺莫图
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(reshape2)
+library(ggplot2)
+library(scales)
+library(cowplot)
+library(dplyr)
+library(regplot)
+library(rms)
+library(survival)
+
+# 加载数据
+load(file = "easyinput/TCGA_BRCA_signature_easyinput.Rdata")
+
+data <- BRCA_surv_risk_clinc
+data <- data %>%
+  rename(time = OS.time, status = OS)
+
+save(data,file = "easyinput/TCGA_BRCA_prediction_model.Rdata")
+
+pbc<-data
+
+pbc$died <- pbc$status==1
+pbc$time <- pbc$time
+pbc <- as.data.frame(pbc)
+head(pbc)
+```
+
+### 开始画nomogram
+```{r,message=FALSE,warning=FALSE,fig.width=10,fig.height=6}
+#install.packages("rms")
+
+dd<-datadist(pbc)
+options(datadist="dd")
+options(na.action="na.delete")
+summary(pbc$time)
+colnames(pbc)
+coxpbc<-cph(formula = Surv(time,died) ~ age + stage + riskscore ,data=pbc,x=T,y=T,surv = T,na.action=na.delete)  #,time.inc =2920
+
+print(coxpbc)
+surv<-Survival(coxpbc) 
+surv2<-function(x) surv(1,x)
+surv3<-function(x) surv(3,x)
+surv4<-function(x) surv(5,x)
+
+x<-nomogram(coxpbc,fun = list(surv2,surv3,surv4),lp=T,
+            funlabel = c('1-year survival Probability','3-year survival Probability','5-year survival Probability'))
+
+#不喜欢默认的颜色，先设置几个颜色
+mycol<-c("#A6CEE3","#1F78B4","#33adff","#2166AC")
+names(mycol) = c("dencol","boxcocl","obscol","spkcol")
+mycol<- as.list(mycol)
+
+
+pbccox <- coxph(formula = Surv(time,died) ~  age + stage + riskscore , data = pbc)
+
+pdf("figures/nomogram_new.pdf",width = 12, height = 8)
+regplot(pbccox, 
+        plots=c("bean","boxes"), 
+        observation=pbc[8,], 
+        title="Survival Nomogram", 
+        failtime=c(3650,1825,1095), 
+        prfail=F, 
+        clickable=F, 
+        points=TRUE, 
+        dencol="#A6CEE3", 
+        boxcol="#1F78B4",
+        droplines=TRUE)
+dev.off()
+
+
+pbcglm <- glm(died ~  age + stage + riskscore, family = "binomial", data=pbc)
+
+regplot(pbcglm, 
+        observation=pbc[1,], 
+        odds=TRUE, 
+        interval="confidence")
+```
+
+
+# 绘制calibration curve进行验证
+```{r}
+f3<-cph(formula = Surv(time,died) ~ age + stage + riskscore,data=pbc,x=T,y=T,surv = T,na.action=na.delete,time.inc = 1095) 
+
+#参数m=50表示每组50个样本进行重复计算
+cal3<-calibrate(f3, cmethod="KM", method="boot",u=1095,m=150,B=1000) 
+
+pdf("figures/calibration_3y.pdf",width = 8,height = 8)
+plot(cal3,
+     lwd = 2,#error bar的粗细
+     lty = 1,#error bar的类型，可以是0-6
+     errbar.col = c("#2166AC"),#error bar的颜色
+     xlim = c(0,1),ylim= c(0,1),
+     xlab = "Nomogram-prediced OS (%)",ylab = "Observed OS (%)",
+     cex.lab=1.2, cex.axis=1, cex.main=1.2, cex.sub=0.6) #字的大小
+lines(cal3[,c('mean.predicted',"KM")], 
+      type = 'b', #连线的类型，可以是"p","b","o"
+      lwd = 2, #连线的粗细
+      pch = 16, #点的形状，可以是0-20
+      col = c("#2166AC")) #连线的颜色
+mtext("")
+box(lwd = 1) #边框粗细
+abline(0,1,lty = 3, #对角线为虚线
+       lwd = 2, #对角线的粗细
+       col = c("#224444")#对角线的颜色
+       ) 
+dev.off()
+```
+
+#### 5年
+```{r}
+f5<-cph(formula = Surv(time,died) ~ age + stage + riskscore,data=pbc,x=T,y=T,surv = T,na.action=na.delete,time.inc = 1825) 
+
+#参数m=50表示每组50个样本进行重复计算
+cal5<-calibrate(f5, cmethod="KM", method="boot",u=1825,m=150,B=1000) 
+
+pdf("figures/calibration_5y.pdf",width = 8,height = 8)
+plot(cal5,
+     lwd = 2,#error bar的粗细
+     lty = 1,#error bar的类型，可以是0-6
+     errbar.col = c("#2166AC"),#error bar的颜色
+     xlim = c(0,1),ylim= c(0,1),
+     xlab = "Nomogram-prediced OS (%)",ylab = "Observed OS (%)",
+     cex.lab=1.2, cex.axis=1, cex.main=1.2, cex.sub=0.6) #字的大小
+lines(cal5[,c('mean.predicted',"KM")], 
+      type = 'b', #连线的类型，可以是"p","b","o"
+      lwd = 2, #连线的粗细
+      pch = 16, #点的形状，可以是0-20
+      col = c("#2166AC")) #连线的颜色
+mtext("")
+box(lwd = 1) #边框粗细
+abline(0,1,lty = 3, #对角线为虚线
+       lwd = 2, #对角线的粗细
+       col = c("#224444")#对角线的颜色
+       ) 
+dev.off()
+```
+
+#### 8年
+```{r, fig.width=8,highlight=8}
+f8<-cph(formula = Surv(time,died) ~ age + stage + riskscore,data=pbc,x=T,y=T,surv = T,na.action=na.delete,time.inc = 2920) 
+cal8<-calibrate(f8, cmethod="KM", method="boot",u=2920,m=150,B=1000)
+
+
+pdf("figures/calibration_8y.pdf",width = 8,height = 8)
+plot(cal8,
+     lwd = 2,
+     lty = 1,
+     errbar.col = c("#B2182B"),
+     xlim = c(0,1),ylim= c(0,1),
+     xlab = "Nomogram-prediced OS (%)",ylab = "Observed OS (%)",
+     col = c("#B2182B"),
+     cex.lab=1.2,cex.axis=1, cex.main=1.2, cex.sub=0.6)
+lines(cal8[,c('mean.predicted',"KM")],
+      type= 'b',
+      lwd = 2,
+      col = c("#B2182B"),
+      pch = 16)
+mtext("")
+box(lwd = 1)
+abline(0,1,lty= 3,
+       lwd = 2,
+       col =c("#224444"))
+dev.off()
+```
+
+#### 同时展示多条curve
+```{r}
+pdf("figures/calibration_compare.pdf",width = 8,height = 8)
+plot(cal3,lwd = 2,lty = 0,errbar.col = c("#2166AC"),
+     bty = "l", #只画左边和下边框
+     xlim = c(0,1),ylim= c(0,1),
+     xlab = "Nomogram-prediced OS (%)",ylab = "Observed OS (%)",
+     col = c("#2166AC"),
+     cex.lab=1.2,cex.axis=1, cex.main=1.2, cex.sub=0.6)
+lines(cal5[,c('mean.predicted',"KM")],
+      type = 'b', lwd = 1, col = c("#2166AC"), pch = 16)
+mtext("")
+
+plot(cal5,lwd = 2,lty = 0,errbar.col = c("#A6CEE3"),
+     xlim = c(0,1),ylim= c(0,1),col = c("#A6CEE3"),add = T)
+lines(cal8[,c('mean.predicted',"KM")],
+      type = 'b', lwd = 1, col = c("#A6CEE3"), pch = 16)
+
+plot(cal8,lwd = 2,lty = 0,errbar.col = c("#B2182B"),
+     xlim = c(0,1),ylim= c(0,1),col = c("#B2182B"),add = T)
+lines(cal8[,c('mean.predicted',"KM")],
+      type = 'b', lwd = 1, col = c("#B2182B"), pch = 16)
+
+abline(0,1, lwd = 2, lty = 3, col = c("#224444"))
+
+legend("topleft", #图例的位置
+       legend = c("3-year","5-year","8-year"), #图例文字
+       col =c("#2166AC","#B2182B"), #图例线的颜色，与文字对应
+       lwd = 2,#图例中线的粗细
+       cex = 1.2,#图例字体大小
+       bty = "n")#不显示图例边框
+dev.off()
+```
+
+
+
+# timeCindex:时间依赖的c-index,评价不同模型的一致性指数。
+```{r eval=FALSE}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(reshape2)
+library(survival)
+library(pec)
+library(dplyr)
+library(tidyverse)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+
+load(file = "easyinput/TCGA_BRCA_signature_easyinput.Rdata")
+
+dat <- BRCA_surv_risk_clinc %>% 
+  dplyr::select(OS.time,OS,age,riskscore,stage)
+
+dat <- as.data.frame(na.omit(dat)) # 移除数据空值
+dat$OS.time <- dat$OS.time/365 # 转化为年
+head(dat)
+write.csv(dat,"easyinput/easyinput_prediction_model.csv",row.names = T)
+dat <- read.csv("easyinput/easyinput_prediction_model.csv",header = T)
+# 注意这里的时间都是以年为单位
+
+cox1 <- coxph(Surv(OS.time,OS)~riskscore,data = dat,x=TRUE,y=TRUE) # 第一个模型仅考虑风险得分
+cox2 <- coxph(Surv(OS.time,OS)~age,data = dat,x=TRUE,y=TRUE) # 第二个模型仅考虑年龄
+cox3 <- coxph(Surv(OS.time,OS)~stage,data = dat,x=TRUE,y=TRUE) # 第三个模型仅考虑分期
+cox4 <- coxph(Surv(OS.time,OS)~age + stage,data = dat,x=TRUE,y=TRUE) # 第四个模型综合考虑年龄和分期
+cox5 <- coxph(Surv(OS.time,OS)~riskscore + age,data = dat,x=TRUE,y=TRUE) # 第五个模型综合考虑得分和年龄
+cox6 <- coxph(Surv(OS.time,OS)~riskscore + age + stage,data = dat,x=TRUE,y=TRUE) # 第六个模型综合考虑所有变量
+
+# 创建公式（也可直接在算法里使用"."代表全部变量）
+# lhs = "Surv(OS.time, OS)"
+# rhs = paste(setdiff(colnames(dat),c("OS","OS.time")),collapse = "+")
+# form = as.formula(paste(lhs, "~", rhs))
+
+# 设置种子以便结果可重复
+set.seed(123456) 
+
+# 每一次cindex评估的时间点，越密集曲线越平滑，这里按每0.5年为一步长
+eval.time <- seq(1,floor(max(dat$OS.time)),0.5) 
+
+# 创建算法需要的对象，命名可以按照自己习惯的方式，或者后期AI调整也很方便
+obj <- list("cox1"=cox1,
+            "cox2"=cox2,
+            "cox3"=cox3,
+            "cox4"=cox4,
+            "cox5"=cox5,
+            "cox6"=cox6)
+
+timeC <- pec::cindex(object = obj,
+                      #formula=form,
+                      formula=Surv(OS.time,OS)~.,
+                      data=dat,
+                      eval.times=eval.time, 
+                      splitMethod = "BootCv") # 使用bootstrap cross validation法计算（注意设置种子）
+
+# 提出time-dependent Cindex结果
+timeC.mat <- do.call(cbind,timeC$AppCindex) 
+# 获取cindex的最小值作为y轴的下界
+ymin <- min(timeC.mat) 
+
+# 如果想用调色板，下面这行代码比较方便
+mycol <- RColorBrewer::brewer.pal(n = ncol(timeC.mat), name = 'Set2')
+# 如果想自定义颜色，要自己设置足够多的颜色，如例文颜色
+mycol <- c("#DFDFDF", "#999999", "#FDD7C2", "#ED7F54", "#C04658", "#050505")
+
+pdf("figures/time-dependent Cindex.pdf",width = 6,height = 5.5)
+par(bty="l", #如果想要例文那样坐标轴分开的，就把l改为n
+    mgp = c(1.9,.33,0), mar=c(4.1,4.1,2.1,2.1)+.1, las=1, tcl=-.25) # 基础画板设置
+
+# 循环绘制折线
+for (i in 1:ncol(timeC.mat)) { 
+  if(i == 1){ # 当绘制第一根cindex折线时plot完整画布
+    plot(eval.time,timeC.mat[,i],
+         type="l",
+         col = mycol[i],
+         lwd = 2,
+         ylim = c(ymin,1),xlim = range(dat$OS.time),
+         xaxt = "n",
+         xlab="Time (Years)",ylab = "Concordance index")
+    axis(side = 1,
+         at = seq(0,max(eval.time),1),
+         labels = seq(0,max(eval.time),1))
+  } else { # 随后添加折线
+    lines(eval.time,timeC.mat[,i],
+          col = mycol[i],
+          lwd = 2)
+  }
+}
+# 例文在0.5处画了阈值线，因为0.5为“猜测”线
+# if(ymin < 0.5) {abline(h = 0.5,lty = 4,col = "grey50",lwd = 2)} # 如果cindex矩阵中最小值小于0.5，则绘制y=0.5处的虚线为阈值
+
+# 个人建议以0.6为阈值，因为cindex认为有效的最低阈值为0.6
+if(ymin < 0.6) {abline(h = 0.6,lty = 4,col = "grey50",lwd = 2)} # 如果cindex矩阵中最小值小于0.5，则绘制y=0.5处的虚线为阈值
+
+# 绘制图例
+legend("topright", # 图例位于右上角 
+       legend = colnames(timeC.mat),
+       col = mycol,
+       lty = 1,
+       lwd = 2,
+       y.intersp = 1, x.intersp = 0.5, # 各行图例的间距细节
+       bty = "o") # 图例保留边框
+invisible(dev.off()) # 关闭图像句柄
+```
+
+
+# 免疫浸润分析
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(RColorBrewer)
+library(circlize)
+library(gplots)
+library(viridis)
+library(oompaBase)
+library(IOBR)
+library(EPIC)
+library(estimate) 
+library(tidyverse)
+library(tidyHeatmap)
+library(maftools)
+library(ggpubr)
+library(ggplot2)
+library(survival)
+
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+
+#自定义函数
+standarize.fun <- function(indata=NULL, halfwidth=NULL, centerFlag=T, scaleFlag=T) {  
+  outdata=t(scale(t(indata), center=centerFlag, scale=scaleFlag))
+  if (!is.null(halfwidth)) {
+    outdata[outdata>halfwidth]=halfwidth
+    outdata[outdata<(-halfwidth)]= -halfwidth
+  }
+  return(outdata)
+}
+
+
+# 显示进程
+display.progress = function (index, totalN, breakN=20) {
+  
+  if ( index %% ceiling(totalN/breakN)  ==0  ) {
+    cat(paste(round(index*100/totalN), "% ", sep=""))
+  }
+  
+} 
+
+# 计算组间统计差异
+cross_subtype_compr <- function(expr = NULL,
+                                subt = NULL,
+                                subt.label = "Subtype",
+                                two_sam_compr_method = "wilcox",
+                                multi_sam_compr_method = "kruskal",
+                                res.path = NULL) {
+  
+  if (!is.element(two_sam_compr_method, c("t.test", "wilcox"))) {stop("Two samples comparison should be t.test or wilcox!\n") }
+  if (!is.element(multi_sam_compr_method, c("anova", "kruskal"))) {stop("multiple samples comparison should be kruskal or anova!\n") }
+  
+  subt.name <- unique(subt[,subt.label])
+  n.subt <- length(subt.name)
+  if(n.subt < 2) {stop("The number of subtype should be greater than 2!\n")}
+  
+  comprTab <- NULL
+  
+  # 两个亚型且为非参数检验
+  if(n.subt == 2 & two_sam_compr_method == "wilcox") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp1 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[1]),,drop = F])])
+      tmp2 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[2]),,drop = F])])
+      wt <- wilcox.test(tmp1,tmp2)
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = wt$p.value,
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 两个亚型且为参数检验
+  if(n.subt == 2 & two_sam_compr_method == "t.test") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp1 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[1]),,drop = F])])
+      tmp2 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[2]),,drop = F])])
+      tt <- t.test(tmp1,tmp2)
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = tt$p.value,
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 多个亚型且为非参数检验
+  if(n.subt > 2 & multi_sam_compr_method == "kruskal") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp.list <- list()
+      for (n in 1:n.subt) {
+        tmp.list[[n]] <- data.frame(value = as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[n]),,drop = F])]),
+                                    subt = subt.name[n],
+                                    stringsAsFactors = F)
+      }
+      tmp <- do.call(rbind,tmp.list)
+      kt <- kruskal.test(value ~ subt,data = tmp)
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = kt$p.value,
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 多个亚型且为参数检验
+  if(n.subt > 2 & multi_sam_compr_method == "anova") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp.list <- list()
+      for (n in 1:n.subt) {
+        tmp.list[[n]] <- data.frame(value = as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[n]),,drop = F])]),
+                                    subt = subt.name[n],
+                                    stringsAsFactors = F)
+      }
+      tmp <- do.call(rbind,tmp.list)
+      at <- summary(aov(value ~ subt,data = tmp))
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = at[[1]][1,5],
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 调整p值
+  comprTab$adjusted.p.value = p.adjust(comprTab$nominal.p.value,method = "BH")
+  # 按p值排序
+  #comprTab <- comprTab[order(comprTab$adjusted.p.value, decreasing = F),] 
+  
+  write.table(comprTab,file.path(res.path,"output/comprTab.txt"),sep = "\t",row.names = F,quote = F)
+  return(comprTab)
+}
+```
+
+## 先使用IOBR计算各种算法拿到各种指标
+```{r}
+# 加载表达矩阵数据
+load(file = "easyinput/TCGA_BRCA_signature_easyinput.Rdata")
+rs_data <- BRCA_surv_risk_clinc
+rs_data$Risk <- ifelse(rs_data$riskscore >= median(rs_data$riskscore), "High", "Low")
+my_group <- rs_data%>% 
+  dplyr::select(OS,OS.time,Risk,4:11) %>% 
+  rename(subtype = Risk)
+
+write.csv(my_group,"output/TCGA_BRCA_risk.csv")
+
+# Method 1: CIBERSORT
+cibersort<-deconvo_tme(eset = expr, method = "cibersort", arrays = FALSE, perm = 200)
+#res<-cell_bar_plot(input = cibersort, title = "CIBERSORT Cell Fraction")
+
+# Method 2: EPIC
+epic<-deconvo_tme(eset = expr, method = "epic", arrays = FALSE)
+
+# Method 3: MCPcounter
+mcp<-deconvo_tme(eset = expr, method = "mcpcounter")
+
+# Method 4: xCELL
+xcell<-deconvo_tme(eset = expr, method = "xcell",arrays = FALSE)
+
+# Method 5: ESTIMATE
+estimate<-deconvo_tme(eset = expr, method = "estimate")
+
+# Method 6: TIMER
+timer<-deconvo_tme(eset = expr, method = "timer", group_list = rep("sarc",dim(expr)[2]))
+
+# Method 7: quanTIseq
+quantiseq<-deconvo_tme(eset = expr, tumor = TRUE, arrays = FALSE, scale_mrna = TRUE, method = "quantiseq")
+
+# Method 8: IPS
+ips<-deconvo_tme(eset = expr, method = "ips", plot= FALSE)
+
+# Combination of above deconvolution results
+
+tme_combine<-cibersort %>% 
+  inner_join(.,mcp,by       = "ID") %>% 
+  inner_join(.,xcell,by     = "ID") %>%
+  inner_join(.,epic,by      = "ID") %>% 
+  inner_join(.,estimate,by  = "ID") %>% 
+  inner_join(.,timer,by     = "ID") %>% 
+  inner_join(.,quantiseq,by = "ID") %>% 
+  inner_join(.,ips,by       = "ID")
+dim(tme_combine)
+
+save(tme_combine,file = "easyinput/BRCA_tme_combine.Rdata")
+
+# 加载热图数据
+hmdat <- read.csv("output/BRCA_tme_combine.csv",row.names = 1)
+
+# 或许你的数据行列与此相反，就这样转置一下
+#hmdat <- t(hmdat)
+# 加载分组
+#risk <- read.csv("easy_input_group.csv",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+risk <- read.csv("output/TCGA_BRCA_risk.csv",row.names = 1)
+risk <- na.omit(risk)
+
+risk <- risk[order(risk$subtype,
+                   risk$OS,
+                   risk$OS.time,
+                   risk$stage,
+                   risk$pathologic_M,
+                   risk$pathologic_N,
+                   risk$pathologic_T,
+                   risk$neoadjuvant_treatment,
+                   risk$race,
+                   risk$age),]
+hmdat <- hmdat[rownames(risk),]
+rownames(risk) <- paste0(rownames(risk))
+dim(hmdat)
+hmdat[1:3,1:3]
+dim(risk)
+head(risk)
+
+library(dplyr)
+Subtype <- risk  %>% 
+  dplyr::select(subtype)
+colnames(Subtype)[1] <- c("Subtype")
+
+mygene_data <- as.data.frame(t(hmdat))
+#mygene_data <- mygene_data[rowMeans(mygene_data)>0,]
+
+## 用前面的自定义函数计算组间统计差异
+comprTab <- cross_subtype_compr(expr = mygene_data, # 或log2(mygene_data + 1)，如果用参数检验，请注意对数转化；若非参均可
+                                subt = Subtype,
+                                two_sam_compr_method = "wilcox", # 两组"t.test", "wilcox"
+                                #multi_sam_compr_method = "kruskal", # 多组"anova", "kruskal"
+                                res.path = ".")
+
+# 用全部基因来画
+n.show_top_gene <- nrow(mygene_data)
+# 或者取top 20个基因来画
+#n.show_top_gene <- 20 
+
+# 按分组排序
+subt.order <- Subtype[order(Subtype$Subtype),,drop = F]
+indata <- mygene_data[comprTab$gene[1:n.show_top_gene],rownames(subt.order)]
+
+# 从easy_input_type.csv读取分类信息
+type <- read.csv("rawdata/easy_input_type.csv", row.names = 1)
+head(type)
+
+# 取出共有样本更新数据
+comsam <- intersect(rownames(risk),rownames(hmdat))
+hmdat <- hmdat[comsam,]
+risk <- risk[comsam,,drop = F]
+dim(hmdat)
+
+# 拆分不同算法结果，获得类的名字
+#immMethod <- sapply(strsplit(colnames(hmdat),"_",fixed = T),"[",2) #用easy_input.csv列名里的算法信息
+immMethod <- type$Methods # 用easy_input_type.csv的算法那一列
+
+# 用pheatmap画图
+library(pheatmap)
+
+# 定义颜色
+methods.col <- brewer.pal(n = length(unique(immMethod)),name = "Paired")
+
+# 创建注释
+# 列注释，位于热图顶端
+annCol <- data.frame(OS.time = risk$OS.time,
+                     Neoadjuvant_treatment = risk$neoadjuvant_treatment,
+                     pathologic_M = risk$pathologic_M,
+                     pathologic_N = risk$pathologic_N,
+                     pathologic_T = risk$pathologic_T,
+                     Race = risk$race,
+                     Age = risk$age,
+                     Stage = risk$stage,
+                     OS = as.character(risk$OS),
+                     Subtype = risk$subtype,
+                     # 以上是risk score和risk type两种注释，可以按照这样的格式继续添加更多种类的注释信息，记得在下面的annColors里设置颜色
+                     row.names = rownames(risk),
+                     stringsAsFactors = F)
+
+# 行注释，位于热图左侧
+annRow <- data.frame(Methods = factor(immMethod,levels = unique(immMethod)),
+                     row.names = colnames(hmdat),
+                     stringsAsFactors = F)
+
+# 为各注释信息设置颜色
+annColors <- list(Methods = c("CIBERSORT" = methods.col[1], #行注释的颜色
+                              "MCPcounter" = methods.col[2],
+                              "xCell" = methods.col[3],
+                              "EPIC" = methods.col[4],
+                              "estimate" = methods.col[5],
+                              "TIMER" = methods.col[6],
+                              "quantiseq" = methods.col[7],
+                              "IPS" = "#f88421"),
+                  # 下面是列注释的颜色，可依此设置更多注释的颜色
+                  "OS.time" = greenred(64), 
+                  "OS" = c("0" = "#ef1828","1" ="#A6CEE3"),
+                  "Neoadjuvant_treatment" = c("Yes" = "#156077","No" = "#A6CEE3"),
+                  "pathologic_M" = c("M0" = "#156077","M1" = "#A6CEE3"),
+                  "Age" = greenred(64),
+                  "pathologic_N" = c("N0" = "#ffbc14","N1" = "#f88421","N2" = "#ef1828","N3" = "#A6CEE3"),
+                  "pathologic_T" = c("T1" = "#ffbc14","T2" = "#f88421","T3" = "#ef1828","T4" = "#A6CEE3"),
+                  "Stage" = c("stage i" = "#ffbc14","stage ii" = "#f88421","stage iii" = "#ef1828","stage iv" = "#A6CEE3"),
+                  "Subtype" = c("High" = "#ffbc14","Low" = "#4da0a0"))
+
+# 数据标准化
+indata <- t(hmdat)
+#indata <- indata[,colSums(indata) > 0] # 确保没有富集全为0的细胞
+plotdata <- standarize.fun(indata,halfwidth = 2)
+
+# 样本按risk score排序
+samorder <- rownames(risk)
+
+
+blank <- "    " # 行名和p值之间的间隔
+p.value <- comprTab$nominal.p.value[1:n.show_top_gene]
+sig.label <- ifelse(p.value < 0.001,"****",
+                    ifelse(p.value < 0.005,"***",
+                           ifelse(p.value < 0.01,"**",
+                                  ifelse(p.value < 0.05,"*",""))))
+p.label <- formatC(p.value, # 将p值变成保留两位小数的科学计数法
+                   format = "e",
+                   digits = 2)
+
+
+library(stringr)
+library(pheatmap)
+library(gplots)
+library(grid)
+add.label <- str_pad(paste0(rownames(plotdata),sig.label), # 固定行名宽度并再右侧补齐" "
+                     max(nchar(paste0(rownames(plotdata),sig.label))), 
+                     side = "right")
+
+#annCol <- subt.order # 获得排序后的亚型注释信息，这里只有一个变量需要注释
+colnames(annCol)[1] <- paste(str_pad(colnames(annCol)[1], # 注释列名补上"P-value"，宽度和刚才一致
+                                     max(nchar(paste0(rownames(plotdata),sig.label))), 
+                                     side = "right"),
+                             "P-value",
+                             sep = blank)
+
+# pheatmap绘图
+pheatmap::pheatmap(mat = as.matrix(plotdata[,samorder]), # 标准化后的数值矩阵
+                   border_color = NA, # 无边框色
+                   color = bluered(64), # 热图颜色为红蓝
+                   cluster_rows = F, # 行不聚类
+                   cluster_cols = F, # 列不聚类
+                   show_rownames = T, # 显示行名
+                   show_colnames = F, # 不显示列名
+                   annotation_col = annCol[samorder,,drop = F], # 列注释
+                   annotation_row = annRow, # 行注释
+                   annotation_colors = annColors, # 注释颜色
+                   gaps_col = cumsum(table(annCol$Subtype)), # 列分割
+                   gaps_row = cumsum(table(annRow$Methods)), # 行分割
+                   labels_row = paste(p.label,add.label, sep=blank), # 自定义样本名义blank作间隔
+                   cellwidth = 1, # 元素宽度
+                   cellheight = 10, # 元素高度
+                   filename = "figures/BRCA_immune_heatmap.pdf")
+```
+
+
+# 免疫检查点分析
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(RColorBrewer)
+library(circlize)
+library(gplots)
+library(viridis)
+library(oompaBase)
+library(IOBR)
+library(EPIC)
+library(estimate) 
+library(tidyverse)
+library(tidyHeatmap)
+library(maftools)
+library(ggpubr)
+library(ggplot2)
+library(survival)
+
+
+standarize.fun <- function(indata=NULL, halfwidth=NULL, centerFlag=T, scaleFlag=T) {  
+  outdata=t(scale(t(indata), center=centerFlag, scale=scaleFlag))
+  if (!is.null(halfwidth)) {
+    outdata[outdata>halfwidth]=halfwidth
+    outdata[outdata<(-halfwidth)]= -halfwidth
+  }
+  return(outdata)
+}
+
+# 显示进程
+display.progress = function (index, totalN, breakN=20) {
+  
+  if ( index %% ceiling(totalN/breakN)  ==0  ) {
+    cat(paste(round(index*100/totalN), "% ", sep=""))
+  }
+  
+} 
+
+# 计算组间统计差异
+cross_subtype_compr <- function(expr = NULL,
+                                subt = NULL,
+                                subt.label = "Subtype",
+                                two_sam_compr_method = "wilcox",
+                                multi_sam_compr_method = "kruskal",
+                                res.path = NULL) {
+  
+  if (!is.element(two_sam_compr_method, c("t.test", "wilcox"))) {stop("Two samples comparison should be t.test or wilcox!\n") }
+  if (!is.element(multi_sam_compr_method, c("anova", "kruskal"))) {stop("multiple samples comparison should be kruskal or anova!\n") }
+  
+  subt.name <- unique(subt[,subt.label])
+  n.subt <- length(subt.name)
+  if(n.subt < 2) {stop("The number of subtype should be greater than 2!\n")}
+  
+  comprTab <- NULL
+  
+  # 两个亚型且为非参数检验
+  if(n.subt == 2 & two_sam_compr_method == "wilcox") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp1 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[1]),,drop = F])])
+      tmp2 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[2]),,drop = F])])
+      wt <- wilcox.test(tmp1,tmp2)
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = wt$p.value,
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 两个亚型且为参数检验
+  if(n.subt == 2 & two_sam_compr_method == "t.test") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp1 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[1]),,drop = F])])
+      tmp2 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[2]),,drop = F])])
+      tt <- t.test(tmp1,tmp2)
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = tt$p.value,
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 多个亚型且为非参数检验
+  if(n.subt > 2 & multi_sam_compr_method == "kruskal") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp.list <- list()
+      for (n in 1:n.subt) {
+        tmp.list[[n]] <- data.frame(value = as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[n]),,drop = F])]),
+                                    subt = subt.name[n],
+                                    stringsAsFactors = F)
+      }
+      tmp <- do.call(rbind,tmp.list)
+      kt <- kruskal.test(value ~ subt,data = tmp)
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = kt$p.value,
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 多个亚型且为参数检验
+  if(n.subt > 2 & multi_sam_compr_method == "anova") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp.list <- list()
+      for (n in 1:n.subt) {
+        tmp.list[[n]] <- data.frame(value = as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[n]),,drop = F])]),
+                                    subt = subt.name[n],
+                                    stringsAsFactors = F)
+      }
+      tmp <- do.call(rbind,tmp.list)
+      at <- summary(aov(value ~ subt,data = tmp))
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = at[[1]][1,5],
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 调整p值
+  comprTab$adjusted.p.value = p.adjust(comprTab$nominal.p.value,method = "BH")
+  # 按p值排序
+  #comprTab <- comprTab[order(comprTab$adjusted.p.value, decreasing = F),] 
+  
+  write.table(comprTab,file.path(res.path,"output/BRCA_checkpoint_comprTab.txt"),sep = "\t",row.names = F,quote = F)
+  return(comprTab)
+}
+```
+
+## 预处理数据
+```{r}
+# 加载表达矩阵数据
+load(file = "easyinput/TCGA_BRCA_signature_easyinput.Rdata")
+
+
+# 提取相应免疫检查点等基因的表达矩阵
+# 加载分组
+Sinfo <- read.csv("output/TCGA_BRCA_risk.csv",row.names = 1)
+Sinfo <- Sinfo[order(Sinfo$subtype,
+                   Sinfo$OS,
+                   Sinfo$OS.time,
+                   Sinfo$stage,
+                   Sinfo$pathologic_M,
+                   Sinfo$pathologic_N,
+                   Sinfo$pathologic_T,
+                   Sinfo$neoadjuvant_treatment,
+                   Sinfo$race,
+                   Sinfo$age),]
+type <- read.csv("rawdata/easy_input_checkpointtype.csv", row.names = 1)
+head(type)
+
+hmdat <- expr[rownames(type),]
+hmdat <- na.omit(hmdat)
+
+hmdat <- t(hmdat)
+
+library(dplyr)
+Subtype <- Sinfo  %>% 
+  dplyr::select(subtype)
+colnames(Subtype)[1] <- c("Subtype")
+
+mygene_data <- as.data.frame(t(hmdat))
+#mygene_data <- mygene_data[rowMeans(mygene_data)>0,]
+
+## 用前面的自定义函数计算组间统计差异
+comprTab <- cross_subtype_compr(expr = mygene_data, # 或log2(mygene_data + 1)，如果用参数检验，请注意对数转化；若非参均可
+                                subt = Subtype,
+                                two_sam_compr_method = "wilcox", # 两组"t.test", "wilcox"
+                                #multi_sam_compr_method = "kruskal", # 多组"anova", "kruskal"
+                                res.path = ".")
+
+# 用全部基因来画
+n.show_top_gene <- nrow(mygene_data)
+# 或者取top 20个基因来画
+#n.show_top_gene <- 20 
+
+# 按分组排序
+subt.order <- Subtype[order(Subtype$Subtype),,drop = F]
+indata <- mygene_data[comprTab$gene[1:n.show_top_gene],rownames(subt.order)]
+
+# 拆分不同算法结果，获得类的名字
+#immMethod <- sapply(strsplit(colnames(hmdat),"_",fixed = T),"[",2) #用easy_input.csv列名里的算法信息
+immMethod <- type$Methods # 用easy_input_type.csv的算法那一列
+
+# 用pheatmap画图
+library(pheatmap)
+
+# 定义颜色
+methods.col <- brewer.pal(n = length(unique(immMethod)),name = "Paired")
+
+# 创建注释
+# 列注释，位于热图顶端
+annCol <- data.frame(OS.time = Sinfo$OS.time,
+                     Neoadjuvant_treatment = Sinfo$neoadjuvant_treatment,
+                     pathologic_M = Sinfo$pathologic_M,
+                     pathologic_N = Sinfo$pathologic_N,
+                     pathologic_T = Sinfo$pathologic_T,
+                     Race = Sinfo$race,
+                     Age = Sinfo$age,
+                     Stage = Sinfo$stage,
+                     OS = as.character(Sinfo$OS),
+                     Subtype = Sinfo$subtype,
+                     # 以上是Sinfo score和Sinfo type两种注释，可以按照这样的格式继续添加更多种类的注释信息，记得在下面的annColors里设置颜色
+                     row.names = rownames(Sinfo),
+                     stringsAsFactors = F)
+
+# 行注释，位于热图左侧
+annRow <- data.frame(Methods = factor(immMethod,levels = unique(immMethod)),
+                     row.names = colnames(hmdat),
+                     stringsAsFactors = F)
+
+# 为各注释信息设置颜色
+annColors <- list(Methods = c("Immune_checkpoints" = methods.col[1], #行注释的颜色
+                              "Cytolytic_activity" = methods.col[2],
+                              "IFN_response" = methods.col[3],
+                              "Siglecs" = methods.col[4]),
+                  # 下面是列注释的颜色，可依此设置更多注释的颜色
+                  "OS.time" = greenred(64), 
+                  "OS" = c("0" = "#ef1828","1" ="#A6CEE3"),
+                  "Neoadjuvant_treatment" = c("Yes" = "#156077","No" = "#A6CEE3"),
+                  "pathologic_M" = c("M0" = "#156077","M1" = "#A6CEE3"),
+                  "Age" = greenred(64),
+                  "pathologic_N" = c("N0" = "#ffbc14","N1" = "#f88421","N2" = "#ef1828","N3" = "#A6CEE3"),
+                  "pathologic_T" = c("T1" = "#ffbc14","T2" = "#f88421","T3" = "#ef1828","T4" = "#A6CEE3"),
+                  "Stage" = c("stage i" = "#ffbc14","stage ii" = "#f88421","stage iii" = "#ef1828","stage iv" = "#A6CEE3"),
+                  "Subtype" = c("High" = "#ffbc14","Low" = "#4da0a0"))
+# 数据标准化
+indata <- t(hmdat)
+#indata <- indata[,colSums(indata) > 0] # 确保没有富集全为0的细胞
+plotdata <- standarize.fun(indata,halfwidth = 2)
+
+# 样本按Sinfo score排序
+samorder <- rownames(Sinfo)
+
+
+blank <- "    " # 行名和p值之间的间隔
+p.value <- comprTab$nominal.p.value[1:n.show_top_gene]
+sig.label <- ifelse(p.value < 0.001,"****",
+                    ifelse(p.value < 0.005,"***",
+                           ifelse(p.value < 0.01,"**",
+                                  ifelse(p.value < 0.05,"*",""))))
+p.label <- formatC(p.value, # 将p值变成保留两位小数的科学计数法
+                   format = "e",
+                   digits = 2)
+
+
+library(stringr)
+library(pheatmap)
+library(gplots)
+library(grid)
+add.label <- str_pad(paste0(rownames(plotdata),sig.label), # 固定行名宽度并再右侧补齐" "
+                     max(nchar(paste0(rownames(plotdata),sig.label))), 
+                     side = "right")
+
+#annCol <- subt.order # 获得排序后的亚型注释信息，这里只有一个变量需要注释
+colnames(annCol)[1] <- paste(str_pad(colnames(annCol)[1], # 注释列名补上"P-value"，宽度和刚才一致
+                                     max(nchar(paste0(rownames(plotdata),sig.label))), 
+                                     side = "right"),
+                             "P-value",
+                             sep = blank)
+
+# pheatmap绘图
+pheatmap::pheatmap(mat = as.matrix(plotdata[,samorder]), # 标准化后的数值矩阵
+                   border_color = NA, # 无边框色
+                   color = NMF:::ccRamp(x = c("blue","white","red"),n = 64), # 热图颜色为红蓝
+                   cluster_rows = F, # 行不聚类
+                   cluster_cols = F, # 列不聚类
+                   show_rownames = T, # 显示行名
+                   show_colnames = F, # 不显示列名
+                   annotation_col = annCol[samorder,,drop = F], # 列注释
+                   annotation_row = annRow, # 行注释
+                   annotation_colors = annColors, # 注释颜色
+                   gaps_col = cumsum(table(annCol$Subtype)), # 列分割
+                   gaps_row = cumsum(table(annRow$Methods)), # 行分割
+                   labels_row = paste(p.label,add.label, sep=blank), # 自定义样本名义blank作间隔
+                   cellwidth = 1, # 元素宽度
+                   cellheight = 14, # 元素高度
+                   filename = "figures/BRCA_CPI_immunecheckpoint.pdf")
+```
+
+
+
+# 选定基因与免疫细胞浸润的相关性
+```{r}
+rm(list = ls())
+
+library(ggplot2)
+library(dplyr)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+
+
+### 读入ssGSEA的结果
+tcga_gsva <- read.csv("output/BRCA_tme_combine.csv",row.names = 1)
+tcga_gsva <- na.omit(tcga_gsva)
+tcga_gsva <- tcga_gsva[,c(36:102,132:137)]
+rownames(tcga_gsva) <- gsub("\\.","-",rownames(tcga_gsva))
+head(tcga_gsva)[,1:3]
+
+### 读入表达量数据
+load(file = "easyinput/TCGA_BRCA_signature_easyinput.Rdata")
+tcga_expr <- expr
+head(tcga_expr)
+
+## 调整免疫矩阵中的样本顺序
+tcga_gsva <- tcga_gsva[colnames(tcga_expr),]
+tcga_expr[1:3,1:4]
+
+### 读入感兴趣的基因
+genelist <- read.table("easyinput/easy_input_gene.txt",header = T)$SYMBOL
+
+gene <- genelist
+immuscore <- function(gene){
+  y <- as.numeric(tcga_expr[gene,])
+  colnames <- colnames(tcga_gsva)
+  do.call(rbind,lapply(colnames, function(x){
+    dd  <- cor.test(as.numeric(tcga_gsva[,x]), y , method="spearman")
+    data.frame(gene=gene,immune_cells=x,cor=dd$estimate,p.value=dd$p.value )
+  }))
+}
+
+#以FOXP3为例，测试一下函数
+immuscore("GZMK")
+
+data <- do.call(rbind,lapply(genelist,immuscore))
+head(data)
+
+#保存到文件
+write.csv(data, "output/GZMK_cor_immucell_BRCA.csv", quote = F, row.names = F)
+
+data$pstar <- ifelse(data$p.value < 0.05,
+                     ifelse(data$p.value < 0.01,"**","*"),
+                     "")
+data$pstar[1:20]
+## 开始画图
+
+#使用ggplot2画图，主要用到的是geom_tile函数：
+#相关性用颜色的不同来表示，相关性的大小用颜色的深浅来反映；
+#有差异的把*号打印在热图上
+
+ggplot(data, aes(immune_cells, gene)) + 
+  geom_tile(aes(fill = cor), colour = "white",size=1)+
+  scale_fill_gradient2(low = "#2b8cbe",mid = "white",high = "#e41a1c")+
+  geom_text(aes(label=pstar),col ="black",size = 5)+
+  theme_minimal()+# 不要背景
+  theme(axis.title.x=element_blank(),#不要title
+        axis.ticks.x=element_blank(),#不要x轴
+        axis.title.y=element_blank(),#不要y轴
+        axis.text.x = element_text(angle = 45, hjust = 1),# 调整x轴文字
+        axis.text.y = element_text(size = 8))+#调整y轴文字
+  #调整legen
+  labs(fill =paste0(" * p < 0.05","\n\n","** p < 0.01","\n\n","Correlation"))
+
+
+#geom_tile函数中的colour可以改变颜色，例如black
+ggplot(data, aes(immune_cells, gene)) + 
+  geom_tile(aes(fill = cor), colour = "black",size=1)+
+  scale_fill_gradient2(low = "#2b8cbe",mid = "white",high = "#e41a1c")+
+  geom_text(aes(label=pstar),col ="black",size = 5)+
+  theme_minimal()+# 不要背景
+  theme(axis.title.x=element_blank(),#不要title
+        axis.ticks.x=element_blank(),#不要x轴
+        axis.title.y=element_blank(),#不要y轴
+        axis.text.x = element_text(angle = 45, hjust = 1),# 调整x轴文字
+        axis.text.y = element_text(size = 8))+#调整y轴文字
+  #调整legen
+  labs(fill =paste0(" * p < 0.05","\n\n","** p < 0.01","\n\n","Correlation"))
+
+
+ggplot(data, aes(immune_cells, gene)) + 
+  geom_tile(aes(fill = cor),size=1)+
+  scale_fill_gradient2(low = "#2b8cbe",mid = "white",high = "#e41a1c")+
+  geom_text(aes(label=pstar),col ="black",size = 5)+
+  theme_minimal()+# 不要背景
+  theme(axis.title.x=element_blank(),#不要title
+        axis.ticks.x=element_blank(),#不要x轴
+        axis.title.y=element_blank(),#不要y轴
+        axis.text.x = element_text(angle = 45, hjust = 1),# 调整x轴文字
+        axis.text.y = element_text(size = 8))+#调整y轴文字
+  #调整legend
+  labs(fill =paste0(" * p < 0.05","\n\n","** p < 0.01","\n\n","Correlation"))
+
+#保存到文件
+ggsave("figures/mygene_cor_immucell_BRCA.pdf", width = 20, height = 12)
+```
+
+
+
+# 用某个基因的表达量来分组，画出各组的TMB box plot，带散点，计算p value。
+```{r}
+rm(list = ls())
+library(dplyr)
+library(tidyverse)
+library(stringr)
+library(ggplot2)
+library(ggpubr)
+
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+
+
+myGene <- read.csv("output/TCGA_BRCA_risk.csv")
+colnames(myGene) <- c("Tumor_Sample_Barcode","Expr") #改列名
+#保留barcode的前三个label
+myGene$Tumor_Sample_Barcode <- str_sub(myGene$Tumor_Sample_Barcode,1, 12)
+head(myGene)
+
+# 用表达量中值分为两组
+myGene$Expr_level <- ifelse(myGene$Expr > median(myGene$Expr),"high","low")
+write.csv(myGene[,c(1,3)], "easy_input_group_2.csv", quote = F, row.names = F)
+
+# 或者自己定义cutoff，分为更多组，例如三组
+cutoff_low <- 3
+cutoff_high <- 8
+myGene$Expr_level <- cut(myGene$Expr, breaks = c(-Inf, cutoff_low, cutoff_high, Inf), labels = c("low","med","high"))
+write.csv(myGene[,c(1,3)], "easy_input_group_3.csv", quote = F, row.names = F)
+
+
+myGroup <- read.csv("easy_input_group_2.csv")
+myGroup$Expr_level <- factor(myGroup$Expr_level, levels = c("low", "high"))
+
+# 分三组的情况
+#myGroup <- read.csv("easy_input_group_3.csv")
+#myGroup$Expr_level <- factor(myGroup$Expr_level, levels = c("low", "med", "high"))
+head(myGroup)
+
+# 加载TMB
+myMut <- data.table::fread("mutation-load.txt",data.table = F)
+# 其中Non-silent per Mb是TMB
+head(myMut)
+
+# 合并
+TMB_clinical_mRNA <- myGroup %>%
+  inner_join(myMut,by = c("Tumor_Sample_Barcode" = "Patient_ID")) %>%
+  rename(c('Non-silent per Mb' = "TMB")) 
+head(TMB_clinical_mRNA)
+
+mycol <- c("darkgreen", "darkorchid3", "orange") #与分组数量一致
+p <- ggplot(TMB_clinical_mRNA, aes(x = Expr_level, y = TMB, color = Expr_level)) +
+  geom_boxplot(outlier.color = NA) + #隐去箱线图上的异常点
+
+  scale_color_manual(values = mycol) + #自定义配色
+  
+  stat_compare_means(#paired = T, #whether you want a paired test
+                     #两组对比，用wilcox.test或t.test
+                     method = "wilcox.test", 
+                     
+                     #多组对比，用kruskal.test或anova
+                     #method = "kruskal.test",
+                     label.y = max(TMB_clinical_mRNA$TMB)*1.1) + #label的位置
+  
+  theme_bw() + #去除背景色
+  theme(panel.grid =element_blank()) + #去除网格线
+  theme(panel.border = element_blank()) + #去除外层边框
+  theme(axis.line = element_line(colour = "black")) + #沿坐标轴显示直线
+  xlab("Discovery Set") + 
+  #ylim(0,5) + #设置Y轴范围
+  guides(color=FALSE) #不显示图例
+p
+# 或者散点图
+p + geom_point(aes(group = Expr_level),
+             alpha=.3, #点太多，设为透明色，就能看到叠加效果
+             size = 2, #点的大小
+             position="jitter") #分散
+ggsave("figures/CPI_BRCA_TMBpoint.pdf")
+```
+
+
+# 糖脂代谢相关分析
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(RColorBrewer)
+library(circlize)
+library(gplots)
+library(viridis)
+library(oompaBase)
+library(IOBR)
+library(EPIC)
+library(estimate) 
+library(tidyverse)
+library(tidyHeatmap)
+library(maftools)
+library(ggpubr)
+library(ggplot2)
+library(survival)
+
+standarize.fun <- function(indata=NULL, halfwidth=NULL, centerFlag=T, scaleFlag=T) {  
+  outdata=t(scale(t(indata), center=centerFlag, scale=scaleFlag))
+  if (!is.null(halfwidth)) {
+    outdata[outdata>halfwidth]=halfwidth
+    outdata[outdata<(-halfwidth)]= -halfwidth
+  }
+  return(outdata)
+}
+
+# 显示进程
+display.progress = function (index, totalN, breakN=20) {
+  
+  if ( index %% ceiling(totalN/breakN)  ==0  ) {
+    cat(paste(round(index*100/totalN), "% ", sep=""))
+  }
+  
+} 
+
+# 计算组间统计差异
+cross_subtype_compr <- function(expr = NULL,
+                                subt = NULL,
+                                subt.label = "Subtype",
+                                two_sam_compr_method = "wilcox",
+                                multi_sam_compr_method = "kruskal",
+                                res.path = NULL) {
+  
+  if (!is.element(two_sam_compr_method, c("t.test", "wilcox"))) {stop("Two samples comparison should be t.test or wilcox!\n") }
+  if (!is.element(multi_sam_compr_method, c("anova", "kruskal"))) {stop("multiple samples comparison should be kruskal or anova!\n") }
+  
+  subt.name <- unique(subt[,subt.label])
+  n.subt <- length(subt.name)
+  if(n.subt < 2) {stop("The number of subtype should be greater than 2!\n")}
+  
+  comprTab <- NULL
+  
+  # 两个亚型且为非参数检验
+  if(n.subt == 2 & two_sam_compr_method == "wilcox") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp1 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[1]),,drop = F])])
+      tmp2 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[2]),,drop = F])])
+      wt <- wilcox.test(tmp1,tmp2)
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = wt$p.value,
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 两个亚型且为参数检验
+  if(n.subt == 2 & two_sam_compr_method == "t.test") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp1 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[1]),,drop = F])])
+      tmp2 <- as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[2]),,drop = F])])
+      tt <- t.test(tmp1,tmp2)
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = tt$p.value,
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 多个亚型且为非参数检验
+  if(n.subt > 2 & multi_sam_compr_method == "kruskal") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp.list <- list()
+      for (n in 1:n.subt) {
+        tmp.list[[n]] <- data.frame(value = as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[n]),,drop = F])]),
+                                    subt = subt.name[n],
+                                    stringsAsFactors = F)
+      }
+      tmp <- do.call(rbind,tmp.list)
+      kt <- kruskal.test(value ~ subt,data = tmp)
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = kt$p.value,
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 多个亚型且为参数检验
+  if(n.subt > 2 & multi_sam_compr_method == "anova") {
+    for (i in 1:nrow(expr)) {
+      display.progress(index = i,totalN = nrow(expr))
+      tmp.list <- list()
+      for (n in 1:n.subt) {
+        tmp.list[[n]] <- data.frame(value = as.numeric(expr[i,rownames(subt[which(subt[,subt.label] == subt.name[n]),,drop = F])]),
+                                    subt = subt.name[n],
+                                    stringsAsFactors = F)
+      }
+      tmp <- do.call(rbind,tmp.list)
+      at <- summary(aov(value ~ subt,data = tmp))
+      comprTab <- rbind.data.frame(comprTab,
+                                   data.frame(gene = rownames(expr)[i],
+                                              nominal.p.value = at[[1]][1,5],
+                                              stringsAsFactors = F),
+                                   stringsAsFactors = F)
+    }
+  }
+  
+  # 调整p值
+  comprTab$adjusted.p.value = p.adjust(comprTab$nominal.p.value,method = "BH")
+  # 按p值排序
+  #comprTab <- comprTab[order(comprTab$adjusted.p.value, decreasing = F),] 
+  
+  write.table(comprTab,file.path(res.path,"output/BRCA_Glycolipid_metabolism_comprTab.txt"),sep = "\t",row.names = F,quote = F)
+  return(comprTab)
+}
+```
+
+## 预处理数据
+```{r}
+# 加载表达矩阵数据
+load(file = "easyinput/TCGA_BRCA_signature_easyinput.Rdata")
+
+
+# 提取相应免疫检查点等基因的表达矩阵
+# 加载分组
+Sinfo <- read.csv("output/TCGA_BRCA_risk.csv",row.names = 1)
+Sinfo <- Sinfo[order(Sinfo$subtype,
+                   Sinfo$OS,
+                   Sinfo$OS.time,
+                   Sinfo$stage,
+                   Sinfo$pathologic_M,
+                   Sinfo$pathologic_N,
+                   Sinfo$pathologic_T,
+                   Sinfo$neoadjuvant_treatment,
+                   Sinfo$race,
+                   Sinfo$age),]
+type <- read.csv("rawdata/easy_input_Glycolipid_metabolism_type.csv", row.names = 1)
+head(type)
+
+hmdat <- expr[rownames(type),]
+hmdat <- na.omit(hmdat)
+
+hmdat <- t(hmdat)
+
+library(dplyr)
+Subtype <- Sinfo  %>% 
+  dplyr::select(subtype)
+colnames(Subtype)[1] <- c("Subtype")
+
+mygene_data <- as.data.frame(t(hmdat))
+#mygene_data <- mygene_data[rowMeans(mygene_data)>0,]
+
+## 用前面的自定义函数计算组间统计差异
+comprTab <- cross_subtype_compr(expr = mygene_data, # 或log2(mygene_data + 1)，如果用参数检验，请注意对数转化；若非参均可
+                                subt = Subtype,
+                                two_sam_compr_method = "wilcox", # 两组"t.test", "wilcox"
+                                #multi_sam_compr_method = "kruskal", # 多组"anova", "kruskal"
+                                res.path = ".")
+
+# 用全部基因来画
+n.show_top_gene <- nrow(mygene_data)
+# 或者取top 20个基因来画
+#n.show_top_gene <- 20 
+
+# 按分组排序
+subt.order <- Subtype[order(Subtype$Subtype),,drop = F]
+indata <- mygene_data[comprTab$gene[1:n.show_top_gene],rownames(subt.order)]
+
+# 拆分不同算法结果，获得类的名字
+#immMethod <- sapply(strsplit(colnames(hmdat),"_",fixed = T),"[",2) #用easy_input.csv列名里的算法信息
+immMethod <- type$Methods # 用easy_input_type.csv的算法那一列
+
+# 用pheatmap画图
+library(pheatmap)
+
+# 定义颜色
+methods.col <- brewer.pal(n = length(unique(immMethod)),name = "Paired")
+
+# 创建注释
+# 列注释，位于热图顶端
+annCol <- data.frame(OS.time = Sinfo$OS.time,
+                     Neoadjuvant_treatment = Sinfo$neoadjuvant_treatment,
+                     pathologic_M = Sinfo$pathologic_M,
+                     pathologic_N = Sinfo$pathologic_N,
+                     pathologic_T = Sinfo$pathologic_T,
+                     Race = Sinfo$race,
+                     Age = Sinfo$age,
+                     Stage = Sinfo$stage,
+                     OS = as.character(Sinfo$OS),
+                     Subtype = Sinfo$subtype,
+                     # 以上是Sinfo score和Sinfo type两种注释，可以按照这样的格式继续添加更多种类的注释信息，记得在下面的annColors里设置颜色
+                     row.names = rownames(Sinfo),
+                     stringsAsFactors = F)
+
+# 行注释，位于热图左侧
+annRow <- data.frame(Methods = factor(immMethod,levels = unique(immMethod)),
+                     row.names = colnames(hmdat),
+                     stringsAsFactors = F)
+
+# 为各注释信息设置颜色
+annColors <- list(Methods = c("Glycolysis" = methods.col[1], #行注释的颜色
+                              "Cholesterol_Synthesis" = methods.col[2],
+                              "MPCs" = methods.col[3]),
+                  # 下面是列注释的颜色，可依此设置更多注释的颜色
+                  "OS.time" = greenred(64), 
+                  "OS" = c("0" = "#ef1828","1" ="#A6CEE3"),
+                  "Neoadjuvant_treatment" = c("Yes" = "#156077","No" = "#A6CEE3"),
+                  "pathologic_M" = c("M0" = "#156077","M1" = "#A6CEE3"),
+                  "Age" = greenred(64),
+                  "pathologic_N" = c("N0" = "#ffbc14","N1" = "#f88421","N2" = "#ef1828","N3" = "#A6CEE3"),
+                  "pathologic_T" = c("T1" = "#ffbc14","T2" = "#f88421","T3" = "#ef1828","T4" = "#A6CEE3"),
+                  "Stage" = c("stage i" = "#ffbc14","stage ii" = "#f88421","stage iii" = "#ef1828","stage iv" = "#A6CEE3"),
+                  "Subtype" = c("High" = "#ffbc14","Low" = "#4da0a0"))
+# 数据标准化
+indata <- t(hmdat)
+#indata <- indata[,colSums(indata) > 0] # 确保没有富集全为0的细胞
+plotdata <- standarize.fun(indata,halfwidth = 2)
+
+# 样本按Sinfo score排序
+samorder <- rownames(Sinfo)
+
+
+blank <- "    " # 行名和p值之间的间隔
+p.value <- comprTab$nominal.p.value[1:n.show_top_gene]
+sig.label <- ifelse(p.value < 0.001,"****",
+                    ifelse(p.value < 0.005,"***",
+                           ifelse(p.value < 0.01,"**",
+                                  ifelse(p.value < 0.05,"*",""))))
+p.label <- formatC(p.value, # 将p值变成保留两位小数的科学计数法
+                   format = "e",
+                   digits = 2)
+
+
+library(stringr)
+library(pheatmap)
+library(gplots)
+library(grid)
+add.label <- str_pad(paste0(rownames(plotdata),sig.label), # 固定行名宽度并再右侧补齐" "
+                     max(nchar(paste0(rownames(plotdata),sig.label))), 
+                     side = "right")
+
+#annCol <- subt.order # 获得排序后的亚型注释信息，这里只有一个变量需要注释
+colnames(annCol)[1] <- paste(str_pad(colnames(annCol)[1], # 注释列名补上"P-value"，宽度和刚才一致
+                                     max(nchar(paste0(rownames(plotdata),sig.label))), 
+                                     side = "right"),
+                             "P-value",
+                             sep = blank)
+
+# pheatmap绘图
+pheatmap::pheatmap(mat = as.matrix(plotdata[,samorder]), # 标准化后的数值矩阵
+                   border_color = NA, # 无边框色
+                   color = NMF:::ccRamp(x = c("blue","white","red"),n = 64), # 热图颜色为红蓝
+                   cluster_rows = F, # 行不聚类
+                   cluster_cols = F, # 列不聚类
+                   show_rownames = T, # 显示行名
+                   show_colnames = F, # 不显示列名
+                   annotation_col = annCol[samorder,,drop = F], # 列注释
+                   annotation_row = annRow, # 行注释
+                   annotation_colors = annColors, # 注释颜色
+                   gaps_col = cumsum(table(annCol$Subtype)), # 列分割
+                   gaps_row = cumsum(table(annRow$Methods)), # 行分割
+                   labels_row = paste(p.label,add.label, sep=blank), # 自定义样本名义blank作间隔
+                   cellwidth = 1, # 元素宽度
+                   cellheight = 10, # 元素高度
+                   filename = "figures/BRCA_CPI_Glycolipid_metabolism.pdf")
+```
+
+
+
+# 计算转录调控网络regulon的活性（注意：并非转录因子活性），画图展示各亚型中regulon的活性规律。
+```{r}
+rm(list = ls())
+Sys.setenv(http_proxy="http://127.0.0.1:4780")
+library(RTN)
+library(snow)
+library(ComplexHeatmap)
+library(ClassDiscovery)
+library(RColorBrewer)
+library(gplots)
+library(pheatmap)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+
+standarize.fun <- function(indata=NULL, halfwidth=NULL, centerFlag=T, scaleFlag=T) {  
+  outdata=t(scale(t(indata), center=centerFlag, scale=scaleFlag))
+  if (!is.null(halfwidth)) {
+    outdata[outdata>halfwidth]=halfwidth
+    outdata[outdata<(-halfwidth)]= -halfwidth
+  }
+  return(outdata)
+}
+```
+
+
+准备输入数据
+```{r}
+# 加载基因表达以及样本数值信息
+load(file = "easyinput/TCGA_BRCA_signature_easyinput.Rdata")
+
+tcgaBRCA <- expr
+pheno <- read.csv("output/TCGA_BRCA_risk.csv", row.names = 1)
+
+# 加载MIBC特异性的调控子
+tfs <- read.table("rawdata/easy_input_regulon.txt",header = T)
+
+# 取共有的基因名
+regulatoryElements <- intersect(tfs$regulon, rownames(tcgaBRCA))
+
+# 运行TNI构建程序
+# we used the R package “RTN” to reconstruct transcriptional regulatory networks (regulons)
+rtni_tcgaBRCA <- tni.constructor(expData = as.matrix(log2(tcgaBRCA + 1)), # 样图计算时候没有取对数, 
+                                 regulatoryElements = regulatoryElements)
+
+# 通过置换以及bootstrap计算reference regulatory network.
+# mutual information analysis and Spearman rank-order correlation deduced the possible associations between a regulator and all potential target from the transcriptome expression profile, and permutation analysis was utilized to erase associations with an FDR > 0.00001. Bootstrapping strategy removed unstable associations through one thousand times of resampling with consensus bootstrap greater than 95%. 
+# 这里量力而行设置多核，或者直接单核运算
+options(cluster=snow::makeCluster(spec = 3, "SOCK")) # 打开4核并行计算（不确定是不是4核，不过我windows只用4，服务器我开12）
+rtni_tcgaBRCA <- tni.permutation(rtni_tcgaBRCA, pValueCutoff = 1e-5, nPermutations = 1000)
+rtni_tcgaBRCA <- tni.bootstrap(rtni_tcgaBRCA, nBootstraps = 1000)
+stopCluster(getOption("cluster")) # 关闭并行计算
+
+# 计算DPI-filtered regulatory network
+# Data processing inequality filtering eliminated the weakest associations in triangles of two regulators and common targets
+rtni_tcgaBRCA <- tni.dpi.filter(rtni_tcgaBRCA, eps = 0, sizeThreshold = TRUE, minRegulonSize = 15)
+
+# 保存TNI对象以便后续分析
+save(rtni_tcgaBRCA, file="easyinput/rtni_tcgaBRCA.RData")
+
+# load("rtni_tcgaBRCA.RData")
+# 计算每个样本的regulon活性
+# Individual regulon activity was estimated by two-sided GSEA
+rtnigsea_tcgaBRCA <- tni.gsea2(rtni_tcgaBRCA, regulatoryElements = regulatoryElements)
+MIBC_regact <- tni.get(rtnigsea_tcgaBRCA, what = "regulonActivity")
+
+# 保存活性对象
+save(MIBC_regact,file = "easyinput/MIBC_regact.RData") 
+
+# 加载活性对象
+(load("easyinput/MIBC_regact.RData"))
+
+# 设置颜色
+clust.col <- c("#DD492E","#40548A")
+blue <- "#5bc0eb"
+gold <- "#ECE700"
+
+plotdata <- standarize.fun(t(MIBC_regact$differential),halfwidth = 1.5) # 标准化regulon的活性
+annCol.tcga <- pheno[order(pheno$subtype),,drop = F] # 构建样本注释信息，并对亚型进行排序
+annColors.tcga <- list()
+annColors.tcga[["subtype"]] <- c("High" = clust.col[1],
+                               "Low" = clust.col[2])
+hcg <- hclust(distanceMatrix(as.matrix(MIBC_regact$differential[rownames(annCol.tcga),]), "euclidean"), "ward.D")
+
+pheatmap::pheatmap(plotdata[hcg$order,rownames(annCol.tcga)],
+               border_color = NA, # 热图单元格无边框
+               color = colorpanel(64,low=blue,mid = "black",high=gold),
+               cluster_rows = T, # 行不聚类
+               cluster_cols = F, # 列聚类
+               show_rownames = T, # 显示行名
+               show_colnames = F, # 不显示列名
+               gaps_col = cumsum(table(annCol.tcga$subtype))[1:2], # 亚型分割
+               cellwidth = 0.5, # 固定单元格宽度
+               cellheight = 12, # 固定单元格高度
+               name = "MIBC Regulon", # 图例名字
+               annotation_col = annCol.tcga[,"subtype",drop = F], # 样本注释
+               annotation_colors = annColors.tcga["subtype"],
+               filename = "figures/BRCA_mygene_regulon.pdf") # 样本注释的对应颜色
+```
+
+
+# mygene与CRISPR相关基因的关系
+
+```{r}
+rm(list = ls())
+Sys.setenv(https_proxy="http://127.0.0.1:4780")
+library(data.table)
+library(limma)
+library(ComplexHeatmap)
+library(ClassDiscovery)
+library(pheatmap)
+Sys.setenv(LANGUAGE = "en") #显示英文报错信息
+options(stringsAsFactors = FALSE) #禁止chr转成factor
+
+# 自定义函数
+standarize.fun <- function(indata=NULL, halfwidth=NULL, centerFlag=T, scaleFlag=T) {  
+  outdata=t(scale(t(indata), center=centerFlag, scale=scaleFlag))
+  if (!is.null(halfwidth)) {
+    outdata[outdata>halfwidth]=halfwidth
+    outdata[outdata<(-halfwidth)]= -halfwidth
+  }
+  return(outdata)
+}
+```
+
+## 输入文件
+TCGA-brca.htseq_fpkm.tsv.gz，表达矩阵。根据原文从XENA数据平台下载brca的FPKM数据，<https://xenabrowser.net/datapages/?dataset=TCGA-brca.htseq_fpkm.tsv&host=https%3A%2F%2Fgdc.xenahubs.net&removeHub=https%3A%2F%2Fxena.treehouse.gi.ucsc.edu%3A443>。
+gencode.v22.annotation.gene.probeMap，表达数据对应的GENECODE22注释文件。
+CRISPR_gene_effect.csv，CRISPR相关信息。下载自DepMap，<https://depmap.org/portal/download/>; CRISPR (DepMap 21Q2 Public+Score, CERES)，也可以从微云下载<https://share.weiyun.com/YTA8nmOE>
+sample_info.csv，brca细胞系，数据来自<https://depmap.org/portal/download/>; Cell Line Sample Info
+```{r}
+## TCGA数据
+# 加载表达数据
+fpkm <- fread("rawdata/TCGA-BRCA.htseq_counts.tsv.gz",sep = "\t",check.names = F,stringsAsFactors = F,header = T,data.table = F)
+rownames(fpkm) <- fpkm[,1]; fpkm <- fpkm[,-1]
+
+# 加载基因表达注释文件
+Ginfo <- read.table("rawdata/gencode.v22.annotation.gene.probeMap",sep = "\t",row.names = 1,check.names = F,stringsAsFactors = F,header = T)
+
+# 将FPKM的ENSEMBL ID转为Gene Symbol并去重
+identical(rownames(Ginfo),rownames(fpkm))
+comgene <- intersect(rownames(fpkm),rownames(Ginfo))
+fpkm <- fpkm[comgene,]; Ginfo <- Ginfo[comgene,]
+fpkm$Gene <- as.character(Ginfo$gene)
+fpkm <- fpkm[!duplicated(fpkm$Gene),] # 重复基因去重
+rownames(fpkm) <- fpkm$Gene; fpkm <- fpkm[,-ncol(fpkm)]
+fpkm <- as.data.frame(round(fpkm,3)) # 取表达的小数点后3位数
+
+# 提取配对的肿瘤和正常样本
+norsam <- colnames(fpkm[,substr(colnames(fpkm),14,16) == "11A"])
+tumsam <- colnames(fpkm[,substr(colnames(fpkm),14,16) == "01A"])
+toMatch <- substr(norsam,9,12) # 取出中段barcode唯一识别患者
+matches <- unique(grep(paste(toMatch,collapse = "|"),  # 在肿瘤样本中匹配正常样本对应的患者
+                       tumsam, value = TRUE))
+t.code <- substr(matches, start = 1, stop = 12) # 取出前段barcode
+n.code <- substr(norsam, start = 1, stop = 12) # 取出前段barcode
+com_code <- intersect(t.code, n.code) # 取出相同患者的前段barcode
+
+pair.t.sam <- paste0(com_code, "-01A") # 添加肿瘤的尾部barcode
+pair.n.sam <- paste0(com_code, "-11A") # 添加正常的尾部barcode
+
+## CRISPR screening数据
+# 读取CRISPR相关信息
+ceres <- fread("rawdata/CRISPRGeneEffect20230523.csv",check.names = F,stringsAsFactors = F,header = T,data.table = F) 
+rownames(ceres) <- ceres[,1]; ceres <- ceres[,-1]
+ceres <- as.data.frame(t(ceres))
+rownames(ceres) <- sapply(strsplit(rownames(ceres)," ",fixed = T),"[",1)
+# 提取brca细胞系
+ccl.anno <- read.csv("rawdata/ccl_sample_info.csv",row.names = 1,check.names = F,stringsAsFactors = F,header = T) # 数据来自 https://depmap.org/portal/download/; Cell Line Sample Info
+ccl.brca <- ccl.anno[which(ccl.anno$Subtype == "Breast Ductal Carcinoma"),] #&
+                             #ccl.anno$primary_or_metastasis == "Primary" &
+                             #ccl.anno$sample_collection_site == "lung"),]
+
+write.csv(ccl.brca,"output/ccl.brca.csv")
+
+ceres.brca <- ceres[,intersect(rownames(ccl.brca), colnames(ceres))]
+dim(ceres.brca) # 原文是31个，我这里筛到51个
+
+candidate.genes <- rownames(ceres.brca)[apply(ceres.brca, 1, function(x) {sum(x < -1) > 0.75 * ncol(ceres.brca)})] # CERES值小于-1在超过75%的细胞系中
+length(candidate.genes)
+write.csv(candidate.genes,"output/CRISPR_candidate_genes.csv")
+
+candidate.genes <- intersect(rownames(fpkm), candidate.genes)
+length(candidate.genes)
+
+pd <- data.frame(Samples = c(pair.t.sam, pair.n.sam),
+                 Group = rep(c("pT","pN"),c(length(pair.t.sam),length(pair.n.sam))),
+                 row.names = c(pair.t.sam,pair.n.sam),
+                 stringsAsFactors = FALSE)
+design <- model.matrix(~ -1 + factor(pd$Group, levels = c("pT","pN")))
+colnames(design) <- c("pT","pN")
+
+# 提取候选基因对应的肿瘤vs正常样本表达数据
+gset <- fpkm[candidate.genes, pd$Samples]
+dim(gset)
+gset[1:2,]
+
+# 差异表达分析
+fit <- limma::lmFit(gset, design = design);
+contrastsMatrix <- limma::makeContrasts(pT - pN, levels = c("pT", "pN"))
+fit2 <- limma::contrasts.fit(fit, contrasts = contrastsMatrix)
+fit2 <- limma::eBayes(fit2, 0.01)
+resData <- limma::topTable(fit2, adjust = "fdr", sort.by = "B", number = 100000)
+resData <- as.data.frame(subset(resData, select=c("logFC","t","B","P.Value","adj.P.Val")))
+resData$id <- rownames(resData)
+colnames(resData) <- c("log2fc","t","B","pvalue","padj","id")
+resData$fc <- 2^resData$log2fc
+resData <- resData[order(resData$padj),c("id","fc","log2fc","pvalue","padj")]
+
+# 保存到文件
+write.table(resData,"output/limma results between pT and pN regarding CRISPR candidates.txt",sep = "\t",row.names = F,col.names = T,quote = F)
+
+degs <- resData[which(resData$padj < 0.05 & abs(resData$log2fc) > 1),]
+
+write.csv(degs,"output/CRISPR_DEGs_BRCA.csv")
+
+annCol <- pd # 样本注释
+annColors <- list("Group" = c("pT" = "red","pN" = "steelblue")) # 注释颜色
+
+indata <- as.matrix(gset[degs$id,rownames(annCol)])
+plotdata <- standarize.fun(indata, halfwidth = 2) # 数据标准化并截断
+hcs <- hclust(distanceMatrix(indata,metric = "euclidean"), method = "ward.D") # 样本聚类
+
+pheatmap(plotdata,
+         color = NMF:::ccRamp(x = c("blue","white","red"),n = 64), 
+         border_color = NA,
+         cluster_rows = T,
+         cluster_cols = hcs,
+         show_rownames = T,
+         show_colnames = F,
+         annotation_col = annCol[,"Group",drop = F],
+         annotation_colors = annColors,
+         treeheight_col = 20,
+         treeheight_row = 20,
+         cellwidth = 2.5,
+         cellheight = 10,
+         filename = "figures/BRCA_CRISPR_DEGs_heatmap.pdf")
+```
+
+
